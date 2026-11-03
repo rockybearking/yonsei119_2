@@ -51,6 +51,10 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs.add('-parameters')
 }
 
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+}
+
 // [기능 설명]
 // 모노레포의 `frontend/` 디렉터리에 있는 정적 웹 파일(index.html, style.css, app.js, Assets/ 등)을
 // 백엔드 빌드 리소스 폴더(`build/resources/main/static`)로 복사하는 태스크입니다.

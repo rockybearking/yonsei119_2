@@ -108,7 +108,7 @@ public class NmcOpenApiClient {
      * 7개 NEMC OpenAPI 엔드포인트를 병렬(`CompletableFuture`)로 동시에 호출하여
      * 엔드포인트 키별 아이템 목록 맵을 반환합니다.
      *
-     * @return 엔드포인트 식별자(`list`, `basic`, `beds` 등) -> 파싱된 아이템 리스트 맵
+     * @return 엔드포인트 식별자(`list`, `basic`, `beds` 등)별 파싱된 아이템 리스트 맵
      */
     public Map<String, List<Map<String, String>>> fetchAllDatasets() {
         Map<String, CompletableFuture<List<Map<String, String>>>> futures = new LinkedHashMap<>();
@@ -137,7 +137,7 @@ public class NmcOpenApiClient {
      * 전체 아이템을 조회하여 리스트로 반환합니다.
      *
      * @param operation 국립중앙의료원 OpenAPI 오퍼레이션 이름
-     * @return 해당 오퍼레이션에서 수신한 전체 XML `<item>` 맵 리스트
+     * @return 해당 오퍼레이션에서 수신한 전체 XML {@code <item>} 맵 리스트
      */
     public List<Map<String, String>> fetchAllPages(String operation) {
         List<Map<String, String>> mergedItems = new ArrayList<>();
@@ -206,8 +206,8 @@ public class NmcOpenApiClient {
      * 인코딩되지 않은 원본(Decoded) 키인 경우에만 UTF-8 URL 인코딩을 적용합니다.
      *
      * [수정 시 영향 및 예시]
-     * - 입력(Decoded): `"abc+def/123=="` -> 출력: `"abc%2Bdef%2F123%3D%3D"`
-     * - 입력(Encoded): `"abc%2Bdef%2F123%3D%3D"` -> 출력: `"abc%2Bdef%2F123%3D%3D"` (그대로 유지)
+     * - 입력(Decoded): {@code "abc+def/123=="} -> 출력: {@code "abc%2Bdef%2F123%3D%3D"}
+     * - 입력(Encoded): {@code "abc%2Bdef%2F123%3D%3D"} -> 출력: {@code "abc%2Bdef%2F123%3D%3D"} (그대로 유지)
      *
      * @param rawKey 설정 파일 또는 환경변수에서 읽은 인증키
      * @return URL 쿼리 파라미터에 안전하게 삽입 가능한 인증키 문자열
@@ -225,15 +225,15 @@ public class NmcOpenApiClient {
 
     /**
      * [메서드 역할]
-     * 국립중앙의료원 OpenAPI가 반환한 XML 문자열을 파싱하여 `totalCount`와 `<item>` 리스트를 추출합니다.
+     * 국립중앙의료원 OpenAPI가 반환한 XML 문자열을 파싱하여 {@code totalCount}와 {@code <item>} 리스트를 추출합니다.
      *
      * [보안 처리]
      * OWASP 권고에 따라 XXE(외부 엔티티 주입) 공격 방어 옵션을 모두 활성화한
      * {@link DocumentBuilderFactory}를 생성하여 사용합니다.
      *
      * [도메인 주의사항]
-     * `<hvec>-5</hvec>` 같은 음수 병상 값(초과수용)이나 `<hv28></hv28>` 같은 빈 태그를
-     * 숫자로 강제 형변환하지 않고 `.trim()`된 문자열 그대로 보존합니다.
+     * {@code <hvec>-5</hvec>} 같은 음수 병상 값(초과수용)이나 {@code <hv28></hv28>} 같은 빈 태그를
+     * 숫자로 강제 형변환하지 않고 {@code .trim()}된 문자열 그대로 보존합니다.
      *
      * @param xmlText   원본 XML 응답 본문
      * @param operation 로깅용 오퍼레이션 이름
@@ -315,8 +315,8 @@ public class NmcOpenApiClient {
     /**
      * 단일 XML 페이지 파싱 결과를 담는 내부 불변 레코드입니다.
      *
-     * @param totalCount XML `<totalCount>` 값
-     * @param items      추출된 `<item>` 맵 리스트
+     * @param totalCount XML {@code <totalCount>} 값
+     * @param items      추출된 {@code <item>} 맵 리스트
      */
     public record ParsedXmlPage(
             int totalCount,
