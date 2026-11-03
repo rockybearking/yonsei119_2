@@ -2760,3 +2760,115 @@ h3 {
         grid-template-columns: 1fr;
     }
 }
+
+/* ==========================================================================
+   [화면 크기별 동적 반응형 상세 정보 창 (#sheet) 3단계 레이아웃]
+   - 요구사항 반영:
+     1) 대화면 모니터 (가로 1200px 이상 & 세로 680px 이상, 비터치 데스크톱):
+        병원 카드를 누르면 화면 정중앙에 '둥근 모서리 사각 네모(Modal Card)'가 나타나며,
+        내부 객체(병상·장비·중증질환·경로탐색 등)가 많으면 카드 내부(.sheet-scroll)에서
+        깔끔하게 세로 스크롤 처리됩니다.
+     2) 작은 모니터 / 창을 줄인 PC 환경 (가로 641px ~ 1199px 또는 세로 679px 이하):
+        기존 그대로 우측에서 좌측으로 나오는 슬라이더 카드(Right Drawer) 형태로 표시됩니다.
+     3) 모바일 환경 (가로 640px 이하 또는 모바일/태블릿 터치 기기):
+        기존 그대로 하단에서 위로 올라오는 바텀시트(Bottom Sheet) 형태를 100% 유지합니다.
+
+   [유지보수 수정 예시]
+   - 중앙 모달로 전환되는 모니터 가로 기준점을 1200px에서 1440px로 높이고 싶다면:
+     아래 `@media (min-width: 1200px)`의 `1200px`와 `app.js`의 `LARGE_MONITOR_MIN_WIDTH`를
+     `1440`으로 변경하면 됩니다.
+   - 중앙 모달의 둥근 모서리 곡률을 더 둥글게(예: 32px) 바꾸고 싶다면:
+     변경 전: border-radius: 26px;
+     변경 후: border-radius: 32px;
+   ========================================================================== */
+
+.sheet-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: #b8c7da transparent;
+}
+
+.sheet-scroll::-webkit-scrollbar {
+    width: 8px;
+}
+
+.sheet-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.sheet-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+    background-color: #b8c7da;
+}
+
+.sheet-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: #8fa5bf;
+}
+
+/* [대화면 모니터 모드] 중앙 둥근모서리 사각 모달 카드 */
+@media (min-width: 1200px) and (min-height: 680px) {
+    body:not(.touch-device) .sheet-dim {
+        background: rgba(12, 26, 46, 0.52);
+        -webkit-backdrop-filter: blur(4px);
+        backdrop-filter: blur(4px);
+    }
+
+    body:not(.touch-device) .sheet {
+        top: 50%;
+        left: 50%;
+        right: auto;
+        bottom: auto;
+        width: min(1080px, calc(100vw - 88px));
+        height: min(86vh, 900px);
+        max-height: min(86vh, 900px);
+        border: 1px solid rgba(216, 228, 242, 0.95);
+        border-radius: 26px;
+        background: #f2f6fc;
+        box-shadow:
+            0 32px 90px rgba(10, 24, 44, 0.36),
+            0 8px 24px rgba(15, 23, 42, 0.14);
+        overflow: hidden;
+        opacity: 0;
+        transform: translate(-50%, -47%) scale(0.96);
+        visibility: hidden;
+        transition:
+            transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 180ms ease,
+            visibility 0s linear 220ms;
+    }
+
+    @supports (height: 100dvh) {
+        body:not(.touch-device) .sheet {
+            height: min(86dvh, 900px);
+            max-height: min(86dvh, 900px);
+        }
+    }
+
+    body:not(.touch-device) .sheet.open {
+        transition-delay: 0s;
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+        visibility: visible;
+    }
+
+    body:not(.touch-device) .sheet-header {
+        padding: 22px 26px 18px;
+        border-radius: 26px 26px 0 0;
+    }
+
+    body:not(.touch-device) .sheet-scroll {
+        padding: 18px 26px 28px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body:not(.touch-device) .sheet {
+        transition: none;
+    }
+}

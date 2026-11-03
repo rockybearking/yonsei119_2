@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 5. 네이버 Directions 5 및 Directions 15 JSON 응답 파싱(소요시간, 거리, 요금, 폴리라인 경로) 검증
  * ============================================================================
  */
-@SpringBootTest
+@SpringBootTest(properties = "yonsei119.nemc.auto-refresh-enabled=false")
 class Yonsei119BackendTests {
 
     @Autowired

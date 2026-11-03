@@ -2858,6 +2858,68 @@ function closeSheet() {
     }
 }
 
+/**
+ * [상수 정의 - 화면 크기별 동적 상세창(#sheet) 레이아웃 기준점]
+ * - LARGE_MONITOR_MIN_WIDTH: 중앙 둥근모서리 사각 모달로 전환되는 최소 가로 픽셀(기본 1200px)
+ * - LARGE_MONITOR_MIN_HEIGHT: 중앙 둥근모서리 사각 모달로 전환되는 최소 세로 픽셀(기본 680px)
+ * - MOBILE_MAX_WIDTH: 모바일 바텀시트로 동작하는 최대 가로 픽셀(기본 640px)
+ *
+ * [수정 시 영향 및 예시]
+ * - QHD 이상 모니터에서만 중앙 모달이 뜨게 하고 싶다면:
+ *   변경 전: const LARGE_MONITOR_MIN_WIDTH = 1200;
+ *   변경 후: const LARGE_MONITOR_MIN_WIDTH = 1600; (style.css의 @media (min-width: 1200px)도 함께 변경)
+ */
+const LARGE_MONITOR_MIN_WIDTH = 1200;
+const LARGE_MONITOR_MIN_HEIGHT = 680;
+const MOBILE_MAX_WIDTH = 640;
+
+/**
+ * [함수 역할]
+ * 현재 브라우저 뷰포트 크기 및 입력 장치 특성에 따라 병원 상세창(`#sheet`)의 레이아웃 모드를
+ * 동적으로 판별하고 `document.body`의 상태 속성(`data-sheet-layout`, `.touch-device`)을 동기화합니다.
+ *
+ * [3단계 동적 레이아웃]
+ * 1. `mobile` (모바일 바텀시트):
+ *    - 화면 가로 `640px` 이하이거나, 마우스(`any-pointer: fine`) 없이 터치(`pointer: coarse`)만 사용하는 스마트폰/태블릿 환경
+ *    - 하단에서 위로 올라오는 기존 바텀시트 형태를 그대로 유지합니다.
+ * 2. `modal` (대화면 모니터 중앙 둥근모서리 사각 모달):
+ *    - 데스크톱/노트북 모니터 환경에서 화면 가로 `1200px` 이상 & 세로 `680px` 이상일 때
+ *    - 화면 정중앙에 둥근 모서리 사각 카드가 나타나고 내부 콘텐츠는 스크롤 처리됩니다.
+ * 3. `slider` (작은 모니터 / 창 축소 시 우측 슬라이더 카드):
+ *    - 데스크톱/노트북 환경에서 창 너비가 `1200px` 미만이거나 높이가 `680px` 미만일 때
+ *    - 기존처럼 우측에서 좌측으로 나오는 슬라이더 드로어 형태로 동작합니다.
+ */
+function syncResponsiveSheetLayout() {
+    const isCoarseOnlyMobile =
+        matchMedia('(pointer: coarse)').matches &&
+        !matchMedia('(any-pointer: fine)').matches;
+    const isMobileEnv =
+        window.innerWidth <= MOBILE_MAX_WIDTH ||
+        isAppleTouchDevice() ||
+        isCoarseOnlyMobile;
+
+    document.body.classList.toggle('touch-device', isMobileEnv);
+
+    let layoutMode = 'slider';
+    if (isMobileEnv) {
+        layoutMode = 'mobile';
+    } else if (
+        window.innerWidth >= LARGE_MONITOR_MIN_WIDTH &&
+        window.innerHeight >= LARGE_MONITOR_MIN_HEIGHT
+    ) {
+        layoutMode = 'modal';
+    }
+
+    if (document.body.dataset.sheetLayout !== layoutMode) {
+        document.body.dataset.sheetLayout = layoutMode;
+        const sheet = byId('sheet');
+        if (sheet) {
+            sheet.style.transform = '';
+            sheet.style.transition = '';
+        }
+    }
+}
+
 function initSheetDrag() {
     const handle = byId('sheet-drag-handle');
     const sheet = byId('sheet');
@@ -2868,7 +2930,7 @@ function initSheetDrag() {
     handle.addEventListener(
         'touchstart',
         event => {
-            if (event.touches.length !== 1) {
+            if (!document.body.classList.contains('touch-device') || event.touches.length !== 1) {
                 return;
             }
             startY = event.touches[0].clientY;
@@ -3189,14 +3251,7 @@ function init() {
     initDirectionsControls();
     updateSummary();
 
-    if (
-        navigator.maxTouchPoints > 0 ||
-        matchMedia('(pointer: coarse)').matches ||
-        isAppleTouchDevice()
-    ) {
-        document.body.classList.add('touch-device');
-    }
-
+    syncResponsiveSheetLayout();
     initSheetDrag();
     initNotice();
 
@@ -3321,6 +3376,7 @@ function init() {
     }
 
     window.addEventListener('resize', () => {
+        syncResponsiveSheetLayout();
         updateMarkers();
         updateMarquees();
     });

@@ -37,16 +37,20 @@ public record Yonsei119Properties(
      * [레코드 역할]
      * 국립중앙의료원(NEMC) 응급의료정보조회서비스 OpenAPI 연동 설정값 묶음입니다.
      *
-     * @param baseUrl          OpenAPI 기본 엔드포인트 URL
-     * @param serviceKey       공공데이터포털 서비스 인증키 (Encoded 또는 Decoded 모두 허용)
-     * @param cacheTtlSeconds  전국 병원 스냅샷 인메모리 캐시 유지 시간(초)
-     * @param requestTimeoutMs 개별 OpenAPI HTTP 요청 타임아웃(밀리초)
+     * @param baseUrl            OpenAPI 기본 엔드포인트 URL
+     * @param serviceKey         공공데이터포털 서비스 인증키 (Encoded 또는 Decoded 모두 허용)
+     * @param cacheTtlSeconds    전국 병원 스냅샷 인메모리 캐시 유지 시간(초)
+     * @param requestTimeoutMs   개별 OpenAPI HTTP 요청 타임아웃(밀리초)
+     * @param autoRefreshEnabled 서버 시작 즉시 사전 로딩(Pre-warming) 및 백그라운드 주기적 자동 갱신 활성화 여부
+     * @param refreshIntervalMs  백그라운드 스케줄러 자동 갱신 주기(밀리초, 기본 45000ms = 45초)
      */
     public record Nemc(
             String baseUrl,
             String serviceKey,
             long cacheTtlSeconds,
-            long requestTimeoutMs
+            long requestTimeoutMs,
+            boolean autoRefreshEnabled,
+            long refreshIntervalMs
     ) {
     }
 
