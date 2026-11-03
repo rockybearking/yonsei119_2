@@ -83,6 +83,9 @@ yonsei119:
     # X-NCP-APIGW-API-KEY-ID (Web Dynamic Map & Directions 공용 Client ID)
     client-id: ${NAVER_MAP_CLIENT_ID:xfbxloc8km}
 
+    # 네이버 지도 Style Editor 다크 모드(야간 관제) Custom Style ID
+    dark-style-id: ${NAVER_MAP_DARK_STYLE_ID:4b12b380-f70c-4d42-85df-ecf7961ff041}
+
     # X-NCP-APIGW-API-KEY (Directions 5 / Directions 15 서버 호출 전용 Client Secret)
     # 주의: 이 값은 백엔드 서버에서만 사용되며 프론트엔드 브라우저로 전달되지 않습니다.
     client-secret: ${NAVER_MAP_CLIENT_SECRET:YwgMcb3rLbfCtBqtLcM53ECu9xuYWScw35MjM8k2}

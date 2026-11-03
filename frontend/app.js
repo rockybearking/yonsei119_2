@@ -34,6 +34,16 @@ const CARD_HEIGHT = 60;
 const NOTICE_KEY = 'emergency-notice-hidden-v1';
 
 /**
+ * 네이버 지도 Style Editor 다크 모드(야간 관제) Custom Style ID
+ *
+ * [수정 시 영향 및 예시]
+ * - 네이버 클라우드 플랫폼 Style Editor에서 다른 다크 테마 스타일 ID로 교체하고 싶다면:
+ *   변경 전: const DEFAULT_NAVER_DARK_STYLE_ID = '4b12b380-f70c-4d42-85df-ecf7961ff041';
+ *   변경 후: const DEFAULT_NAVER_DARK_STYLE_ID = '새로운-스타일-ID';
+ */
+const DEFAULT_NAVER_DARK_STYLE_ID = '4b12b380-f70c-4d42-85df-ecf7961ff041';
+
+/**
  * 기본 기준점 좌표 (사용자 GPS 미수신 시 서울시청 기준 폴백)
  *
  * [수정 시 영향 및 예시]
@@ -237,7 +247,21 @@ const state = {
     previousFocus: null,
     inflight: null,
     clusterItems: [],
-    hasFitted: false
+    hasFitted: false,
+    darkMode: true,
+    naverDarkStyleId: DEFAULT_NAVER_DARK_STYLE_ID,
+    circleKey: null,
+    circleMap: null,
+    cardPointerDown: false,
+    pendingMarkerUpdate: false,
+    diagnostics: {
+        circleCreatedCount: 0,
+        markersUpdatedCount: 0,
+        idleEventCount: 0,
+        themeSwitchCount: 0,
+        lastHospitalOpened: null,
+        lastError: null
+    }
 };
 
 const byId = id => document.getElementById(id);
@@ -624,7 +648,10 @@ async function fetchData(forceRefresh = false) {
         });
 
         if (!response.ok) {
-            throw new Error(`백엔드 서버 응답 오류 (HTTP ${response.status})`);
+            return Promise.reject(new Error(`백엔드 서버 응답 오류 (HTTP ${response.status})`)).catch(err => {
+                setStatus(`조회 실패: ${err.message} · 이전 정보가 있다면 재확인하세요.`);
+                byId('developer-status').textContent = `갱신 실패: ${err.message}`;
+            });
         }
 
         const snapshot = await response.json();
@@ -641,7 +668,7 @@ async function fetchData(forceRefresh = false) {
         };
         state.lastUpdated = snapshot.updatedAt ? new Date(snapshot.updatedAt) : new Date();
 
-        if (!state.hasFitted) {
+        if (!state.hasFitted && state.map) {
             fitRadius();
             state.hasFitted = true;
         }
@@ -771,6 +798,30 @@ function updateCoordinates() {
 
 /**
  * [함수 역할]
+ * 현재 네이버 지도 인스턴스(`state.map`)가 오버레이(`Circle`, `Polyline`, `OverlayView`) 및
+ * 좌표 투영(`Projection`)을 처리할 준비가 완료되었는지 확인합니다.
+ *
+ * [동작 원리]
+ * - 일반 2D 지도 모드(`renderMode !== 2`)에서는 인스턴스 생성 즉시 준비 완료(`true`) 상태입니다.
+ * - GL 커스텀 다크 스타일 모드(`renderMode === 2`)에서는 비동기 스타일(`style.json`) 로드가 끝나
+ *   `isGLReady()`가 `true`가 된 시점부터 투영(`mapbox.project`) 및 도형 매니저(`overlayManager`)가 활성화됩니다.
+ */
+function isMapReadyForOverlays() {
+    if (!state.map) {
+        return false;
+    }
+    try {
+        if (state.map.get?.('renderMode') === 2 && typeof state.map.isGLReady === 'function') {
+            return Boolean(state.map.isGLReady());
+        }
+    } catch {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * [함수 역할]
  * 네이버 지도(`naver.maps.OverlayView`)를 상속하여 임의의 DOM 엘리먼트(병원 카드, 내 위치 마커)를
  * 특정 위경도 좌표 위에 렌더링하는 커스텀 오버레이 생성자입니다.
  *
@@ -780,7 +831,7 @@ function updateCoordinates() {
  *   CSS `transform: translate(...)`로 정확한 앵커 포인트를 맞춥니다.
  *
  * @param {Object} options 오버레이 옵션 (`position`, `content`, `map`, `xAnchor`, `yAnchor`, `zIndex`)
- * @returns {naver.maps.OverlayView} 생성된 네이버 커스텀 오버레이 인스턴스
+ * @returns {Object} 생성된 네이버 커스텀 오버레이(`naver.maps.OverlayView`) 인스턴스
  */
 function createNaverDomOverlay(options) {
     class NaverDomOverlay extends naver.maps.OverlayView {
@@ -798,7 +849,10 @@ function createNaverDomOverlay(options) {
 
         onAdd() {
             const panes = this.getPanes();
-            const targetPane = panes.floatPane || panes.overlayLayer;
+            const targetPane = panes?.floatPane || panes?.overlayLayer || panes?.overlayImage;
+            if (!targetPane) {
+                return;
+            }
             this.content.style.position = 'absolute';
             this.content.style.zIndex = String(this.zIndex);
             this.content.style.transform = `translate(${-this.xAnchor * 100}%, ${-this.yAnchor * 100}%)`;
@@ -806,17 +860,21 @@ function createNaverDomOverlay(options) {
         }
 
         draw() {
-            if (!this.getMap()) {
+            if (!this.getMap() || !isMapReadyForOverlays()) {
                 return;
             }
-            const projection = this.getProjection();
-            if (!projection) {
-                return;
-            }
-            const offset = projection.fromCoordToOffset(this.position);
-            if (offset) {
-                this.content.style.left = `${Math.round(offset.x)}px`;
-                this.content.style.top = `${Math.round(offset.y)}px`;
+            try {
+                const projection = this.getProjection();
+                if (!projection || typeof projection.fromCoordToOffset !== 'function') {
+                    return;
+                }
+                const offset = projection.fromCoordToOffset(this.position);
+                if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)) {
+                    this.content.style.left = `${Math.round(offset.x)}px`;
+                    this.content.style.top = `${Math.round(offset.y)}px`;
+                }
+            } catch {
+                // GL 비동기 스타일 초기화 직전 투영 예외 방어
             }
         }
 
@@ -832,36 +890,103 @@ function createNaverDomOverlay(options) {
 
 /**
  * [함수 역할]
+ * GL 도형 오버레이(`Circle`, `Polyline`)가 지도 이동(pan/zoom) 중 `_triggerRedraw()`에 의해
+ * 매 프레임 동일한 GeoJSON 좌표를 WebWorker로 재전송(`updateGeojsonSource`)하며 깜빡이거나
+ * Mapbox GL의 `idle` 이벤트를 무한 재호출하는 현상을 원천 차단합니다.
+ */
+function guardGlShapeRedraw(shapeOverlay) {
+    if (!shapeOverlay || typeof shapeOverlay.drawGL !== 'function' || shapeOverlay._glRedrawGuarded) {
+        return shapeOverlay;
+    }
+    const origDrawGL = shapeOverlay.drawGL.bind(shapeOverlay);
+    shapeOverlay._glRedrawGuarded = true;
+    shapeOverlay.drawGL = function () {
+        if (this.hasSource?.() && this._glSourceLoadedOnce) {
+            return;
+        }
+        origDrawGL();
+        if (this.hasSource?.()) {
+            this._glSourceLoadedOnce = true;
+        }
+    };
+    return shapeOverlay;
+}
+
+/**
+ * [함수 역할]
  * 네이버 지도 위에 현재 기준점(`state.origin`) 중심의 탐색 반경 원(`naver.maps.Circle`)을 그립니다.
+ *
+ * [깜빡임(Flicker) 원천 차단 설계]
+ * - 네이버 지도 GL 모드(`gl: true`)에서 `naver.maps.Circle`은 내부 Mapbox GL의 GeoJSON Source/Layer로 등록됩니다.
+ * - 만약 `idle` 이벤트마다 기존 `Circle`을 `setMap(null)`로 지우고 새로 생성하면,
+ *   Mapbox GL이 Source 변경을 감지하여 리페인트 후 다시 `idle` 이벤트를 발생시키는 무한 루프(깜빡임)가 일어납니다.
+ * - 이를 방지하기 위해 `(지도 인스턴스, 기준 위도, 기준 경도, 반경 값, 다크모드 여부)`를 조합한
+ *   `state.circleKey`가 동일할 때는 기존 `Circle`을 절대 파괴·재생성하지 않고 즉시 반환(No-op)합니다.
  *
  * [수정 시 영향 및 예시]
  * - 반경 원의 테두리 색상을 파란색(`#2873df`)에서 초록색(`#03c75a`)으로 바꾸고 싶다면
  *   아래 `strokeColor`와 `fillColor` 속성값을 변경하면 됩니다.
+ *
+ * @param {boolean} [force=false] 강제로 반경 원을 재생성할지 여부
  */
-function updateCircle() {
-    if (!state.map) {
+function updateCircle(force = false) {
+    if (!state.map || !isMapReadyForOverlays()) {
         return;
     }
 
-    state.circle?.setMap(null);
-    state.circle = null;
     const radius = byId('radius').value;
 
     if (radius === 'all') {
+        if (state.circle) {
+            try {
+                state.circle.setMap(null);
+            } catch {
+                // 이전 반경 원 해제 중 예외 무시
+            }
+            state.circle = null;
+        }
+        state.circleKey = null;
+        state.circleMap = null;
         return;
     }
 
-    state.circle = new naver.maps.Circle({
-        map: state.map,
-        center: new naver.maps.LatLng(state.origin.lat, state.origin.lng),
-        radius: Number(radius) * 1000,
-        strokeWeight: 2,
-        strokeColor: '#2873df',
-        strokeOpacity: 0.65,
-        fillColor: '#5e9cf0',
-        fillOpacity: 0.07,
-        clickable: false
-    });
+    const nextKey = `${state.origin.lat.toFixed(6)},${state.origin.lng.toFixed(6)},${radius},${state.darkMode ? 'dark' : 'light'}`;
+
+    if (!force && state.circle && state.circleMap === state.map && state.circleKey === nextKey) {
+        return;
+    }
+
+    if (state.circle) {
+        try {
+            state.circle.setMap(null);
+        } catch {
+            // 이전 반경 원 해제 중 예외 무시
+        }
+        state.circle = null;
+    }
+
+    try {
+        const circle = new naver.maps.Circle({
+            map: state.map,
+            center: new naver.maps.LatLng(state.origin.lat, state.origin.lng),
+            radius: Number(radius) * 1000,
+            strokeWeight: 2,
+            strokeColor: state.darkMode ? '#60a5fa' : '#2873df',
+            strokeOpacity: state.darkMode ? 0.8 : 0.65,
+            fillColor: state.darkMode ? '#3b82f6' : '#5e9cf0',
+            fillOpacity: state.darkMode ? 0.11 : 0.07,
+            clickable: false
+        });
+        state.circle = guardGlShapeRedraw(circle);
+        state.circleKey = nextKey;
+        state.circleMap = state.map;
+        state.diagnostics.circleCreatedCount += 1;
+    } catch {
+        // GL 레이어 초기화 직전 예외 방어 (glReady 이벤트에서 즉시 재실행됨)
+        state.circle = null;
+        state.circleKey = null;
+        state.circleMap = null;
+    }
 }
 
 /**
@@ -869,10 +994,14 @@ function updateCircle() {
  * 사용자의 현재 GPS 위치(`state.origin`)에 파란색 맥동 마커(`.location-marker`)를 표시합니다.
  */
 function updateLocationMarker() {
-    state.locationMarker?.setMap(null);
+    try {
+        state.locationMarker?.setMap(null);
+    } catch {
+        // 이전 마커 해제 중 예외 무시
+    }
     state.locationMarker = null;
 
-    if (!state.map || !state.locationKnown) {
+    if (!state.map || !state.locationKnown || !isMapReadyForOverlays()) {
         return;
     }
 
@@ -926,10 +1055,15 @@ function locate() {
 
             updateCoordinates();
             updateLocationMarker();
-            fitRadius();
 
-            if (byId('radius').value === 'all') {
-                state.map.panTo(new naver.maps.LatLng(state.origin.lat, state.origin.lng));
+            if (!state.selected) {
+                fitRadius();
+
+                if (byId('radius').value === 'all') {
+                    state.map.panTo(new naver.maps.LatLng(state.origin.lat, state.origin.lng));
+                }
+            } else {
+                updateCircle();
             }
 
             updateMarkers();
@@ -1009,6 +1143,7 @@ function bindHospitalCard(card, open) {
             return;
         }
 
+        state.cardPointerDown = true;
         tracker?.abort();
         tracker = new AbortController();
         moved = false;
@@ -1035,7 +1170,12 @@ function bindHospitalCard(card, open) {
             if (next.type === 'pointercancel') {
                 moved = true;
             }
+            state.cardPointerDown = false;
             tracker.abort();
+            if (state.pendingMarkerUpdate) {
+                state.pendingMarkerUpdate = false;
+                requestAnimationFrame(() => updateMarkers());
+            }
         };
 
         const options = {
@@ -1066,11 +1206,17 @@ function bindHospitalCard(card, open) {
  */
 function coordToScreenPoint(lat, lng) {
     const latLng = new naver.maps.LatLng(lat, lng);
-    const projection = state.map.getProjection?.();
-    if (projection && typeof projection.fromCoordToOffset === 'function') {
-        const offset = projection.fromCoordToOffset(latLng);
-        if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)) {
-            return { x: offset.x, y: offset.y };
+    if (isMapReadyForOverlays()) {
+        try {
+            const projection = state.map.getProjection?.();
+            if (projection && typeof projection.fromCoordToOffset === 'function') {
+                const offset = projection.fromCoordToOffset(latLng);
+                if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)) {
+                    return { x: offset.x, y: offset.y };
+                }
+            }
+        } catch {
+            // GL 비동기 스타일 초기화 중 투영 객체 미준비 예외 방어
         }
     }
     const zoom = state.map.getZoom?.() || 12;
@@ -1083,6 +1229,21 @@ function coordToScreenPoint(lat, lng) {
 
 /**
  * [함수 역할]
+ * 네이버 지도 위에 렌더링된 모든 병원 카드 커스텀 오버레이(`state.markers`)를 안전하게 제거하고 초기화합니다.
+ */
+function clearMarkers() {
+    for (const marker of state.markers) {
+        try {
+            marker.setMap(null);
+        } catch {
+            // 오버레이 해제 중 예외 무시
+        }
+    }
+    state.markers = [];
+}
+
+/**
+ * [함수 역할]
  * 현재 지도 뷰포트 영역과 활성화된 필터(`권역응급`, `상급종합`, `의료원`, `일반·기타`) 및 탐색 반경에 맞춰
  * 네이버 지도 위에 병원 카드 오버레이를 렌더링합니다.
  */
@@ -1091,11 +1252,21 @@ function updateMarkers() {
         return;
     }
 
-    for (const marker of state.markers) {
-        marker.setMap(null);
+    // 사용자가 병원 카드를 누르고 있는 도중(pointerdown ~ pointerup 사이)에는
+    // DOM 노드가 교체되어 클릭 이벤트가 유실되지 않도록 마커 갱신을 클릭 직후로 지연합니다.
+    if (state.cardPointerDown) {
+        state.pendingMarkerUpdate = true;
+        return;
     }
-    state.markers = [];
+
     updateCircle();
+
+    if (!isMapReadyForOverlays()) {
+        return;
+    }
+
+    clearMarkers();
+    state.diagnostics.markersUpdatedCount += 1;
 
     const radius = byId('radius').value;
     const enabled = {};
@@ -1104,7 +1275,12 @@ function updateMarkers() {
         enabled[group] = byId(`filter-${group}`).checked;
     }
 
-    const viewport = state.map.getBounds();
+    let viewport = null;
+    try {
+        viewport = state.map.getBounds();
+    } catch {
+        viewport = null;
+    }
 
     const rank = {
         regional: 0,
@@ -1115,11 +1291,14 @@ function updateMarkers() {
 
     const candidates = state.hospitals
         .filter(hospital => {
-            if (!matchesFilters(hospital, enabled)) {
-                return false;
-            }
-            if (radius !== 'all' && distanceKm(state.origin, hospital) > Number(radius)) {
-                return false;
+            const isSelected = Boolean(state.selected && hospital.id === state.selected.id);
+            if (!isSelected) {
+                if (!matchesFilters(hospital, enabled)) {
+                    return false;
+                }
+                if (radius !== 'all' && distanceKm(state.origin, hospital) > Number(radius)) {
+                    return false;
+                }
             }
             if (!viewport) {
                 return true;
@@ -1238,21 +1417,71 @@ function openCluster(items) {
    [10. 실시간 병원 검색 및 자동완성]
    -------------------------------------------------------------------------- */
 
+/**
+ * [함수 역할]
+ * 검색창 등에서 특정 병원을 선택했을 때 지도의 중심 좌표(Center)와 줌 레벨(Zoom)을
+ * 단일 원자적(Atomic) 카메라 트랜지션(`morph`)으로 이동시킵니다.
+ *
+ * [버그 수정 배경 — 최초 검색 시 지도 미이동 현상 해결]
+ * - 네이버 지도 WebGL 엔진(`maps-gl.js`)에서 `panTo(coord)` 직후 동기적으로 `setZoom(15)`를 호출하면,
+ *   첫 번째 검색 시(현재 줌이 15가 아닐 때) `setZoom(15)` 내부의 `zoomBy()`가
+ *   아직 `panTo`가 시작되기 전의 '이전 지도 중심점(`_mapModel.getCenterPixel()`)'을 기준으로
+ *   `easeTo({ around: 이전중심점, zoom: 15 })`를 덮어써 버려 `panTo` 애니메이션이 취소됩니다.
+ * - 반면 두 번째 검색 시에는 이미 줌이 15이므로 `setZoom(15)`가 `if (i === n) return false;`로 조기 종료되어
+ *   `panTo`가 취소되지 않고 정상 이동했던 것입니다.
+ * - 이를 해결하기 위해 중심 이동과 줌 변경을 하나의 `easeTo({ center, zoom })`로 결합 수행하는
+ *   `state.map.morph(targetLatLng, targetZoom)`를 사용하여 첫 번째 검색부터 100% 정확히 이동시킵니다.
+ *
+ * @param {Object} hospital 이동할 대상 병원 객체 (`lat`, `lng` 포함)
+ * @param {number} [targetZoom=15] 이동 후 목표 줌 레벨
+ */
+function focusHospitalOnMap(hospital, targetZoom = 15) {
+    if (!state.map || !hospital || !Number.isFinite(hospital.lat) || !Number.isFinite(hospital.lng)) {
+        return;
+    }
+
+    // 사용자가 명시적으로 병원을 검색·선택했으므로 초기 반경 자동 맞춤(fitRadius)이 덮어쓰지 않도록 고정
+    state.hasFitted = true;
+
+    const targetLatLng = new naver.maps.LatLng(hospital.lat, hospital.lng);
+
+    if (state.map.get?.('renderMode') === 2 && !isMapReadyForOverlays()) {
+        naver.maps.Event.once(state.map, 'glReady', () => {
+            focusHospitalOnMap(hospital, targetZoom);
+        });
+        return;
+    }
+
+    if (typeof state.map.morph === 'function') {
+        state.map.morph(targetLatLng, targetZoom, {
+            duration: 450,
+            easing: 'easeOutCubic'
+        });
+    } else if (typeof state.map.updateBy === 'function') {
+        state.map.updateBy(targetLatLng, targetZoom);
+    } else {
+        state.map.setCenter(targetLatLng);
+        state.map.setZoom(targetZoom);
+    }
+}
+
 function updateSearch() {
     closeRadius();
 
     const list = byId('search-results');
-    const query = byId('keyword')
+    const keywordInput = byId('keyword');
+    const query = keywordInput
         .value
         .replace(/\s+/g, '')
         .toLowerCase();
 
     list.replaceChildren();
 
+    const isKeywordFocused = document.activeElement === keywordInput;
     list.hidden =
         !query ||
         byId('search-content').hidden ||
-        state.selected !== null;
+        (state.selected !== null && !isKeywordFocused);
 
     if (!query) {
         return;
@@ -1285,12 +1514,13 @@ function updateSearch() {
         );
 
         button.addEventListener('click', () => {
-            byId('keyword').value = hospital.name;
+            keywordInput.value = hospital.name;
             list.hidden = true;
+            keywordInput.blur();
 
-            state.map.panTo(new naver.maps.LatLng(hospital.lat, hospital.lng));
-            state.map.setZoom(15);
             openHospital(hospital);
+            focusHospitalOnMap(hospital, 15);
+            updateMarkers();
         });
 
         li.append(button);
@@ -1344,12 +1574,17 @@ function drawRouteOnMap(hospital, data) {
         return;
     }
 
+    if (!isMapReadyForOverlays()) {
+        naver.maps.Event.once(state.map, 'glReady', () => drawRouteOnMap(hospital, data));
+        return;
+    }
+
     clearRouteOnMap();
 
     const latLngPath = data.path.map(([lng, lat]) => new naver.maps.LatLng(lat, lng));
 
     // 1. 외곽선 폴리라인 (지도 배경과 명확히 구분되도록 진한 테두리 역할)
-    state.routeOutlinePolyline = new naver.maps.Polyline({
+    state.routeOutlinePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
         map: state.map,
         path: latLngPath,
         strokeColor: '#064e3b',
@@ -1358,10 +1593,10 @@ function drawRouteOnMap(hospital, data) {
         strokeLineCap: 'round',
         strokeLineJoin: 'round',
         zIndex: 90
-    });
+    }));
 
     // 2. 메인 주행 경로 폴리라인
-    state.routePolyline = new naver.maps.Polyline({
+    state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
         map: state.map,
         path: latLngPath,
         strokeColor: '#03c75a',
@@ -1370,7 +1605,7 @@ function drawRouteOnMap(hospital, data) {
         strokeLineCap: 'round',
         strokeLineJoin: 'round',
         zIndex: 95
-    });
+    }));
 
     // 3. 상단 플로팅 활성 경로 배너 표시
     const banner = byId('active-route-banner');
@@ -1439,7 +1674,13 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            if (statusBadge) {
+                statusBadge.textContent = '오류';
+            }
+            container.replaceChildren(
+                node('p', 'empty-state', `자동차 경로 조회 실패: HTTP ${response.status}`)
+            );
+            return;
         }
 
         const data = await response.json();
@@ -2757,6 +2998,13 @@ function openHospital(hospital, focus = true) {
     closeRadius();
     byId('search-results').hidden = true;
 
+    state.diagnostics.lastHospitalOpened = {
+        id: hospital.id,
+        name: hospital.name,
+        erBeds: hospital.beds?.hvec ?? null,
+        timestamp: Date.now()
+    };
+
     if (focus) {
         state.previousFocus = document.activeElement;
     }
@@ -2826,7 +3074,7 @@ function openHospital(hospital, focus = true) {
 }
 
 function setBackgroundInert(value) {
-    for (const selector of ['#map', '#top-panel', '#search-panel']) {
+    for (const selector of ['#map', '#top-panel', '#search-panel', '#theme-toggle']) {
         const el = document.querySelector(selector);
         if (el) {
             el.inert = value;
@@ -2982,10 +3230,15 @@ function initSheetDrag() {
  * [함수 역할]
  * 상하단 오버레이 패널 높이를 감안하여 네이버 지도 뷰포트 패딩을 적용하고 경계 영역(`bounds`)을 피팅합니다.
  *
- * @param {naver.maps.LatLngBounds} bounds 피팅할 위경도 경계 객체
+ * @param {Object} bounds 피팅할 위경도 경계(`naver.maps.LatLngBounds`) 객체
  */
 function fitBounds(bounds) {
     if (!state.map || !bounds) {
+        return;
+    }
+
+    if (!isMapReadyForOverlays()) {
+        naver.maps.Event.once(state.map, 'glReady', () => fitBounds(bounds));
         return;
     }
 
@@ -2996,12 +3249,16 @@ function fitBounds(bounds) {
     const top = Math.min((topPanel?.offsetHeight || 80) + 24, height * 0.28);
     const bottom = Math.min((searchPanel?.offsetHeight || 120) + 24, height * 0.25);
 
-    state.map.fitBounds(bounds, {
-        top,
-        right: 32,
-        bottom,
-        left: 32
-    });
+    try {
+        state.map.fitBounds(bounds, {
+            top,
+            right: 32,
+            bottom,
+            left: 32
+        });
+    } catch {
+        // GL 전환 직전 fitBounds 예외 방어
+    }
 }
 
 function radiusExtent(origin, radiusKm) {
@@ -3244,7 +3501,243 @@ function initDirectionsControls() {
     byId('active-route-clear')?.addEventListener('click', clearRouteOnMap);
 }
 
+/**
+ * [함수 역할]
+ * 현재 테마(`state.darkMode`)에 맞춰 네이버 지도(`naver.maps.Map`) 인스턴스를 마운트하거나 재마운트합니다.
+ *
+ * [동작 원리]
+ * - 다크 모드(`state.darkMode === true`)일 때:
+ *   네이버 지도 Style Editor의 GL 커스텀 스타일(`gl: true`, `customStyleId: '4b12b380-f70c-4d42-85df-ecf7961ff041'`)을
+ *   적용하여 야간 관제용 다크 지도를 렌더링합니다.
+ * - 라이트 모드(`state.darkMode === false`)일 때:
+ *   표준 라이트 지도를 렌더링하며, 전환 직전의 중심 좌표(`center`), 줌 레벨(`zoom`),
+ *   탐색 반경 원(`circle`), 내 위치 마커(`locationMarker`), 병원 마커 카드(`markers`),
+ *   자동차 주행 경로 폴리라인(`routePolyline`)을 그대로 보존·복원합니다.
+ */
+function mountNaverMap() {
+    if (typeof naver === 'undefined' || !naver.maps) {
+        return;
+    }
+
+    const mapContainer = byId('map');
+    let prevCenter = new naver.maps.LatLng(state.origin.lat, state.origin.lng);
+    let prevZoom = 12;
+
+    try {
+        const currentCenter = state.map?.getCenter?.();
+        if (currentCenter) {
+            prevCenter = currentCenter;
+        }
+        const currentZoom = state.map?.getZoom?.();
+        if (Number.isFinite(currentZoom)) {
+            prevZoom = currentZoom;
+        }
+    } catch {
+        // 이전 지도 좌표 조회 중 예외 무시
+    }
+
+    const hadActiveRoute = Boolean(
+        state.routePolyline &&
+        state.selected &&
+        state.activeRouteData?.code === 0 &&
+        Array.isArray(state.activeRouteData.path) &&
+        state.activeRouteData.path.length
+    );
+
+    clearMarkers();
+    try {
+        state.circle?.setMap(null);
+    } catch {
+        // 무시
+    }
+    state.circle = null;
+    state.circleKey = null;
+    state.circleMap = null;
+
+    try {
+        state.locationMarker?.setMap(null);
+    } catch {
+        // 무시
+    }
+    state.locationMarker = null;
+
+    try {
+        state.routeOutlinePolyline?.setMap(null);
+        state.routePolyline?.setMap(null);
+    } catch {
+        // 무시
+    }
+    state.routeOutlinePolyline = null;
+    state.routePolyline = null;
+
+    try {
+        state.map?.destroy?.();
+    } catch {
+        // 기존 맵 인스턴스 해제 중 예외 무시
+    }
+
+    // 이전 MapView.destroy()로 인한 잔여 속성/이벤트 충돌을 원천 차단하기 위해 새 내부 캔버스 호스트 생성
+    const canvasHost = document.createElement('div');
+    canvasHost.className = 'naver-map-canvas';
+    canvasHost.style.width = '100%';
+    canvasHost.style.height = '100%';
+    mapContainer.replaceChildren(canvasHost);
+
+    const baseOptions = {
+        center: prevCenter,
+        zoom: prevZoom,
+        zoomControl: false,
+        mapDataControl: false
+    };
+
+    // 다크 모드와 라이트 모드 모두 동일한 WebGL 벡터 엔진(gl: true)을 사용하여
+    // 마우스 스크롤 휠 확대/축소량(1/200 소수점 단위 줌)과 60fps 애니메이션 부드러움을 완벽히 통일합니다.
+    if (!naver.maps.glEnabled && !state._glWaitFinished) {
+        if (!state._glCallbackBound) {
+            state._glCallbackBound = true;
+            const finishGlWait = () => {
+                if (state._glWaitFinished) {
+                    return;
+                }
+                state._glWaitFinished = true;
+                mountNaverMap();
+            };
+            const prevCallback = naver.maps.onJSContentLoaded;
+            naver.maps.onJSContentLoaded = (...args) => {
+                if (typeof prevCallback === 'function') {
+                    prevCallback(...args);
+                }
+                finishGlWait();
+            };
+            setTimeout(finishGlWait, 1500);
+        }
+        return;
+    }
+
+    const glSubmoduleReady = Boolean(
+        naver.maps.glEnabled &&
+        (typeof naver.maps.Util?.glSupported !== 'function' || naver.maps.Util.glSupported())
+    );
+
+    let usingGlEngine = false;
+    if (glSubmoduleReady) {
+        try {
+            const glOptions = {
+                ...baseOptions,
+                gl: true
+            };
+            if (state.darkMode && state.naverDarkStyleId) {
+                glOptions.customStyleId = state.naverDarkStyleId;
+            }
+            state.map = new naver.maps.Map(canvasHost, glOptions);
+            usingGlEngine = true;
+        } catch (err) {
+            console.warn('네이버 GL 벡터 지도 초기화 실패 — 기본 2D 지도로 폴백합니다:', err);
+            state.diagnostics.lastError = String(err?.message || err);
+            state.map = new naver.maps.Map(canvasHost, baseOptions);
+        }
+    } else {
+        state.map = new naver.maps.Map(canvasHost, baseOptions);
+    }
+
+    const syncMapOverlays = () => {
+        if (!state.hasFitted && state.hospitals.length > 0) {
+            state.hasFitted = true;
+            fitRadius();
+        }
+        updateCircle();
+        updateLocationMarker();
+        updateMarkers();
+    };
+
+    if (usingGlEngine) {
+        naver.maps.Event.addListener(state.map, 'glReady', () => {
+            syncMapOverlays();
+            if (hadActiveRoute && state.selected && state.activeRouteData) {
+                drawRouteOnMap(state.selected, state.activeRouteData);
+            }
+        });
+    } else {
+        naver.maps.Event.addListener(state.map, 'init', syncMapOverlays);
+        syncMapOverlays();
+        if (hadActiveRoute && state.selected && state.activeRouteData) {
+            drawRouteOnMap(state.selected, state.activeRouteData);
+        }
+    }
+
+    naver.maps.Event.addListener(state.map, 'idle', () => {
+        state.diagnostics.idleEventCount += 1;
+        updateMarkers();
+    });
+
+    for (const eventName of ['dragstart', 'zoom_changed']) {
+        naver.maps.Event.addListener(state.map, eventName, blurKeyword);
+    }
+
+    state.diagnostics.getState = () => state;
+    state.diagnostics.getSchemas = () => ({
+        EMERGENCY_BED_ITEMS,
+        INPATIENT_BED_SECTIONS,
+        EQUIPMENT_TABLE_ITEMS,
+        SEVERE_DISEASE_GROUPS
+    });
+    window.__YONSEI119_DIAGNOSTICS__ = state.diagnostics;
+}
+
+/**
+ * [함수 역할]
+ * 다크 모드 / 라이트 모드 테마 상태를 전환하고 UI 클래스, 좌측 하단 버튼 아이콘, 네이버 지도 스타일을 동기화합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 최초 접속 시 기본 테마를 다크(`true`)가 아닌 라이트(`false`)로 바꾸고 싶다면
+ *   `state.darkMode` 초기값과 `init()` 내부의 `applyTheme(true, false)`를 `false`로 변경하면 됩니다.
+ *
+ * @param {boolean} isDark 다크 모드 활성화 여부
+ * @param {boolean} [remountMap=true] 네이버 지도 인스턴스를 새 테마로 재마운트할지 여부
+ */
+function applyTheme(isDark, remountMap = true) {
+    state.darkMode = Boolean(isDark);
+    document.body.classList.toggle('dark-mode', state.darkMode);
+    document.body.dataset.theme = state.darkMode ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = state.darkMode ? 'dark' : 'light';
+
+    const toggleBtn = byId('theme-toggle');
+    const moonIcon = byId('theme-icon-moon');
+    const sunIcon = byId('theme-icon-sun');
+
+    if (toggleBtn) {
+        toggleBtn.setAttribute('aria-pressed', String(state.darkMode));
+        const label = state.darkMode
+            ? '라이트 모드로 전환 (현재 다크 모드)'
+            : '다크 모드로 전환 (현재 라이트 모드)';
+        toggleBtn.setAttribute('aria-label', label);
+        toggleBtn.title = state.darkMode ? '라이트 모드로 전환' : '다크 모드로 전환';
+    }
+
+    if (moonIcon && sunIcon) {
+        moonIcon.hidden = !state.darkMode;
+        sunIcon.hidden = state.darkMode;
+    }
+
+    if (remountMap && state.map) {
+        state.diagnostics.themeSwitchCount += 1;
+        mountNaverMap();
+    }
+}
+
+/**
+ * [함수 역할]
+ * 좌측 하단 다크모드 동그라미 토글 버튼(`#theme-toggle`) 클릭 이벤트를 초기화합니다.
+ */
+function initThemeToggle() {
+    applyTheme(true, false);
+    byId('theme-toggle')?.addEventListener('click', () => {
+        applyTheme(!state.darkMode, true);
+    });
+}
+
 function init() {
+    initThemeToggle();
     initSearchFocus();
     initPanels();
     initRadius();
@@ -3291,6 +3784,7 @@ function init() {
     });
 
     byId('keyword').addEventListener('input', updateSearch);
+    byId('keyword').addEventListener('focus', updateSearch);
     byId('refresh-button').addEventListener('click', () => loadData(true));
     byId('location-button').addEventListener('click', locate);
 
@@ -3360,20 +3854,8 @@ function init() {
         return;
     }
 
-    // 네이버 지도(NAVER Maps v3) 인스턴스 초기화
-    state.map = new naver.maps.Map(byId('map'), {
-        center: new naver.maps.LatLng(DEFAULT_ORIGIN.lat, DEFAULT_ORIGIN.lng),
-        zoom: 12,
-        zoomControl: false,
-        mapDataControl: false
-    });
-
-    // 지도 이동 및 줌 완료(idle) 시 마커 갱신
-    naver.maps.Event.addListener(state.map, 'idle', () => updateMarkers());
-
-    for (const eventName of ['dragstart', 'zoom_changed']) {
-        naver.maps.Event.addListener(state.map, eventName, blurKeyword);
-    }
+    // 네이버 지도(NAVER Maps v3) 인스턴스 초기화 (최초 기본: 다크 모드 customStyleId 적용)
+    mountNaverMap();
 
     window.addEventListener('resize', () => {
         syncResponsiveSheetLayout();

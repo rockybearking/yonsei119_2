@@ -29,6 +29,8 @@
     --ui-gap: 8px;
     --ratio: 0;
     --search-panel-height: 154px;
+    --ticker-duration: 8s;
+    --ticker-diff: 40px;
     
     /* 의료 대시보드 테마 컬러 토큰 */
     --primary-blue: #0284c7;
@@ -2871,4 +2873,629 @@ h3 {
     body:not(.touch-device) .sheet {
         transition: none;
     }
+}
+
+/* ==========================================================================
+   [다크 모드(야간 관제 테마) & 좌측 하단 테마 전환 동그라미 버튼 (#theme-toggle)]
+   - 요구사항 반영:
+     1) 최초 접속 시 기본 상태는 '다크(dark)' 모드로 시작합니다.
+     2) 좌측 하단에 위치한 '#theme-toggle' 동그라미 버튼의 크기는
+        우측 하단 검색 상자(#search-panel) 내부의 동그라미 아이콘 버튼과
+        완전히 동일한 크기(clamp(36px, 10vw, 42px), 아이콘 19px)로 지정했습니다.
+     3) 네이버 지도(customStyleId: 4b12b380-f70c-4d42-85df-ecf7961ff041)뿐만 아니라
+        상단 패널, 검색 박스, 병원 마커 카드, 상세창(중앙 모달/우측 슬라이더/모바일 바텀시트),
+        E-Gen 현황판, 다이얼로그까지 모든 UI에 다크 테마가 일관되게 적용됩니다.
+
+   [유지보수 수정 예시]
+   - 좌측 하단 다크모드 버튼의 위치를 바닥에서 조금 더 위로(예: 28px) 올리고 싶다면:
+     변경 전: bottom: calc(var(--edge) + env(safe-area-inset-bottom));
+     변경 후: bottom: calc(28px + env(safe-area-inset-bottom));
+   ========================================================================== */
+
+.theme-toggle-fab {
+    --action-size: clamp(36px, 10vw, 42px);
+    position: fixed;
+    left: calc(var(--edge) + env(safe-area-inset-left));
+    bottom: calc(var(--edge) + env(safe-area-inset-bottom));
+    z-index: 12;
+    width: var(--action-size);
+    height: var(--action-size);
+    flex: 0 0 var(--action-size);
+    border-radius: 50%;
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.25);
+    touch-action: manipulation;
+    transition:
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        color 0.18s ease,
+        transform 0.15s ease,
+        bottom 0.2s ease;
+}
+
+.theme-toggle-fab svg {
+    width: 19px;
+    height: 19px;
+}
+
+.theme-toggle-fab:active {
+    transform: scale(0.94);
+}
+
+/* 좁은 모바일 화면에서 검색 박스가 펼쳐져 있을 때 버튼이 겹치지 않도록 검색 박스 위로 자동 이동 */
+@media (max-width: 560px) {
+    .theme-toggle-fab {
+        bottom: calc(
+            var(--search-panel-height, 154px) +
+            var(--edge) + 10px +
+            env(safe-area-inset-bottom)
+        );
+    }
+
+    body.search-collapsed .theme-toggle-fab {
+        bottom: calc(var(--edge) + env(safe-area-inset-bottom));
+    }
+}
+
+/* --------------------------------------------------------------------------
+   [전체 UI 다크 모드 (body.dark-mode) 스타일 오버라이드]
+   -------------------------------------------------------------------------- */
+
+body.dark-mode {
+    color-scheme: dark;
+    color: #e2e8f0;
+    background: #0b1120;
+}
+
+body.dark-mode #map {
+    background: #0b1120;
+}
+
+/* 1. 상단 관제 패널(.top-panel) 및 하단 검색 패널(.search-panel) */
+body.dark-mode .top-panel,
+body.dark-mode .search-panel,
+body.dark-mode .radius-popover,
+body.dark-mode .search-results {
+    background: rgba(15, 23, 42, 0.92);
+    border-color: #334155;
+    box-shadow: 0 16px 40px rgba(2, 6, 23, 0.65);
+    color: #e2e8f0;
+}
+
+body.dark-mode .top-panel-title,
+body.dark-mode .search-heading,
+body.dark-mode .radius-popover h2 {
+    color: #f1f5f9;
+}
+
+body.dark-mode #status,
+body.dark-mode #radius-help,
+body.dark-mode .map-count {
+    color: #94a3b8;
+}
+
+body.dark-mode .coordinates {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #93c5fd;
+}
+
+body.dark-mode .coordinates small {
+    color: #94a3b8;
+}
+
+body.dark-mode .text-button {
+    color: #93c5fd;
+}
+
+body.dark-mode .panel-toggle {
+    background: #1e293b;
+    border-color: #334155;
+    color: #cbd5e1;
+}
+
+body.dark-mode .panel-toggle:hover {
+    background: #334155;
+    color: #f8fafc;
+}
+
+/* 2. 동그라미 액션 버튼 (.map-action, #theme-toggle) & 갱신 시간 배지 */
+body.dark-mode .map-action {
+    background: #1e293b;
+    border-color: #334155;
+    color: #60a5fa;
+    box-shadow: 0 6px 18px rgba(2, 6, 23, 0.5);
+}
+
+body.dark-mode .map-action:hover,
+body.dark-mode .map-action[aria-expanded="true"] {
+    background: #273549;
+    border-color: #60a5fa;
+}
+
+body.dark-mode .theme-toggle-fab {
+    background: rgba(15, 23, 42, 0.94);
+    border-color: #475569;
+    color: #fbbf24;
+    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.65);
+}
+
+body.dark-mode .theme-toggle-fab:hover {
+    background: #1e293b;
+    border-color: #fbbf24;
+}
+
+body.dark-mode .radius-button-label,
+body.dark-mode .search-panel .search-updated-pill .updated-label {
+    color: #94a3b8;
+}
+
+body.dark-mode #radius-value,
+body.dark-mode .search-panel .search-updated-pill time {
+    color: #60a5fa;
+}
+
+body.dark-mode .search-panel .search-updated-pill {
+    background: #1e293b;
+    border-color: #334155;
+    color: #cbd5e1;
+}
+
+/* 3. 검색 입력창, 반경 선택창, 검색 결과 드롭다운, 필터 체크박스 */
+body.dark-mode #keyword,
+body.dark-mode #radius {
+    background: #0f172a;
+    border-color: #334155;
+    color: #f1f5f9;
+}
+
+body.dark-mode #keyword::placeholder {
+    color: #64748b;
+}
+
+body.dark-mode #search-form button {
+    background: #2563eb;
+    color: #ffffff;
+}
+
+body.dark-mode #search-form button:hover {
+    background: #3b82f6;
+}
+
+body.dark-mode .result-button {
+    color: #e2e8f0;
+}
+
+body.dark-mode .result-button small {
+    color: #94a3b8;
+}
+
+body.dark-mode .result-button:hover,
+body.dark-mode .result-button:focus-visible {
+    background: #1e293b;
+}
+
+body.dark-mode .filters label {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+body.dark-mode .regional {
+    --hospital-color: #c084fc;
+}
+
+body.dark-mode .tertiary {
+    --hospital-color: #fb7185;
+}
+
+body.dark-mode .medical {
+    --hospital-color: #60a5fa;
+}
+
+body.dark-mode .other {
+    --hospital-color: #94a3b8;
+}
+
+/* 4. 지도 위 병원 마커 카드 (.hospital-card) 및 상단 활성 경로 배너 */
+body.dark-mode .hospital-card {
+    background: rgba(15, 23, 42, 0.95);
+    border-color: #334155;
+    border-left: 4px solid var(--hospital-color);
+    color: #f1f5f9;
+    box-shadow: 0 8px 22px rgba(2, 6, 23, 0.65);
+}
+
+body.dark-mode .hospital-card small {
+    color: #94a3b8;
+}
+
+body.dark-mode .hospital-card::after {
+    border-color: #0f172a;
+}
+
+body.dark-mode .hospital-card:hover,
+body.dark-mode .hospital-card:focus-visible {
+    border-color: var(--hospital-color);
+    box-shadow: 0 10px 26px rgba(2, 6, 23, 0.85);
+}
+
+body.dark-mode .active-route-banner {
+    background: rgba(15, 23, 42, 0.95);
+    border-color: #059669;
+    box-shadow: 0 12px 32px rgba(2, 6, 23, 0.7);
+}
+
+body.dark-mode .active-route-summary strong {
+    color: #f1f5f9;
+}
+
+body.dark-mode .active-route-summary span:last-child {
+    color: #34d399;
+}
+
+body.dark-mode .active-route-clear {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.dark-mode .active-route-clear:hover {
+    background: #334155;
+}
+
+/* 5. 병원 상세 정보창 (#sheet — 중앙 모달 / 우측 슬라이더 / 모바일 바텀시트 공통) */
+body.dark-mode .sheet-dim {
+    background: rgba(2, 6, 23, 0.68);
+}
+
+body.dark-mode .sheet {
+    background: #0b1120;
+    border-color: #1e293b;
+    color: #e2e8f0;
+    box-shadow: 0 32px 90px rgba(0, 0, 0, 0.75);
+}
+
+body.dark-mode .sheet-drag-handle span {
+    background: #475569;
+}
+
+body.dark-mode .sheet-header {
+    background: linear-gradient(135deg, #0f172a 30%, #172554);
+    border-bottom-color: #1e293b;
+}
+
+body.dark-mode .sheet-header h1 {
+    color: #f8fafc;
+}
+
+body.dark-mode .sheet-updated,
+body.dark-mode .muted {
+    color: #94a3b8;
+}
+
+body.dark-mode .type-badge {
+    background: rgba(59, 130, 246, 0.18);
+    color: #93c5fd;
+    border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+body.dark-mode .close-button {
+    background: #1e293b;
+    color: #cbd5e1;
+}
+
+body.dark-mode .close-button:hover {
+    background: #334155;
+    color: #ffffff;
+}
+
+body.dark-mode .sheet-scroll {
+    scrollbar-color: #475569 transparent;
+}
+
+body.dark-mode .sheet-scroll::-webkit-scrollbar-thumb {
+    background-color: #475569;
+}
+
+body.dark-mode .safety-note {
+    background: rgba(120, 53, 15, 0.25);
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #fcd34d;
+}
+
+body.dark-mode .phone-missing {
+    background: #1e293b;
+    color: #94a3b8;
+}
+
+body.dark-mode .detail-section {
+    background: #111827;
+    border-color: #1f2937;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+body.dark-mode .section-heading h2 {
+    color: #f1f5f9;
+}
+
+body.dark-mode .section-heading span,
+body.dark-mode .section-help {
+    color: #94a3b8;
+}
+
+/* 6. 네이버 Directions 5 / 15 자동차 경로 탐색 섹션 다크 모드 */
+body.dark-mode .directions-section {
+    background: linear-gradient(180deg, rgba(6, 78, 59, 0.22) 0%, #111827 100%);
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+body.dark-mode .directions-status-badge {
+    background: rgba(16, 185, 129, 0.18);
+    color: #6ee7b7;
+}
+
+body.dark-mode .directions-select,
+body.dark-mode .directions-action-btn:not(.primary) {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.dark-mode .directions-kpi-card {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+body.dark-mode .directions-kpi-label,
+body.dark-mode .directions-kpi-sub {
+    color: #94a3b8;
+}
+
+body.dark-mode .directions-kpi-value {
+    color: #f8fafc;
+}
+
+body.dark-mode .directions-kpi-value.highlight {
+    color: #34d399;
+}
+
+body.dark-mode .directions-guide-details {
+    border-top-color: #334155;
+}
+
+body.dark-mode .directions-guide-details summary {
+    color: #6ee7b7;
+}
+
+body.dark-mode .directions-guide-list {
+    color: #cbd5e1;
+}
+
+/* 7. E-Gen 종합 병상·장비·중증질환 보드 다크 모드 */
+body.dark-mode .egen-table-card,
+body.dark-mode .severe-cat-box {
+    background: #0f172a;
+    border-color: #1e293b;
+}
+
+body.dark-mode .egen-header-bar {
+    background: #1e293b;
+    color: #f1f5f9;
+    border-bottom-color: #334155;
+}
+
+body.dark-mode .egen-header-bar.emergency {
+    background: rgba(153, 27, 27, 0.35);
+    color: #fca5a5;
+    border-bottom-color: rgba(248, 113, 113, 0.3);
+}
+
+body.dark-mode .egen-header-bar.inpatient {
+    background: rgba(30, 64, 175, 0.35);
+    color: #93c5fd;
+    border-bottom-color: rgba(96, 165, 250, 0.3);
+}
+
+body.dark-mode .egen-header-bar.isolation {
+    background: rgba(146, 64, 14, 0.35);
+    color: #fde68a;
+    border-bottom-color: rgba(251, 191, 36, 0.3);
+}
+
+body.dark-mode .egen-header-bar.severe {
+    background: rgba(157, 23, 77, 0.35);
+    color: #f9a8d4;
+    border-bottom-color: rgba(244, 114, 182, 0.3);
+}
+
+body.dark-mode .egen-header-bar.equipment {
+    background: rgba(22, 101, 52, 0.35);
+    color: #86efac;
+    border-bottom-color: rgba(74, 222, 128, 0.3);
+}
+
+body.dark-mode .egen-subgroup-header,
+body.dark-mode .severe-cat-header {
+    background: #172033;
+    color: #cbd5e1;
+    border-top-color: #1e293b;
+    border-bottom-color: #1e293b;
+}
+
+body.dark-mode .egen-matrix-grid,
+body.dark-mode .egen-grid-row,
+body.dark-mode .equipment-matrix-grid,
+body.dark-mode .severe-matrix-grid {
+    background: #0f172a;
+}
+
+body.dark-mode .egen-cell,
+body.dark-mode .equipment-cell {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+body.dark-mode .egen-cell:hover {
+    border-color: #475569;
+}
+
+body.dark-mode .egen-cell-label,
+body.dark-mode .severe-sub-label {
+    color: #e2e8f0;
+}
+
+body.dark-mode .severe-sub-item {
+    border-bottom-color: #1e293b;
+}
+
+body.dark-mode .egen-cell-param,
+body.dark-mode .severe-remark-box {
+    background: #0f172a;
+    border-color: #334155;
+    color: #94a3b8;
+}
+
+body.dark-mode .egen-badge-pill-green,
+body.dark-mode .egen-badge-box-green,
+body.dark-mode .egen-badge-avail-green {
+    background: rgba(22, 163, 74, 0.2);
+    border-color: rgba(74, 222, 128, 0.45);
+    color: #4ade80;
+}
+
+body.dark-mode .egen-badge-pill-orange,
+body.dark-mode .egen-badge-avail-yellow {
+    background: rgba(217, 119, 6, 0.2);
+    border-color: rgba(251, 191, 36, 0.45);
+    color: #fbbf24;
+}
+
+body.dark-mode .egen-badge-pill-red,
+body.dark-mode .egen-badge-avail-red {
+    background: rgba(220, 38, 38, 0.22);
+    border-color: rgba(248, 113, 113, 0.5);
+    color: #f87171;
+}
+
+body.dark-mode .egen-badge-pill-red.egen-badge-overflow {
+    background: rgba(220, 38, 38, 0.35);
+    border-color: #ef4444;
+    color: #fca5a5;
+}
+
+body.dark-mode .egen-badge-dash {
+    background: #0f172a;
+    border-color: #334155;
+    color: #64748b;
+}
+
+/* 8. 진료 공지 메시지 카드 & 개발자 모드 & 다이얼로그 모달 다크 모드 */
+body.dark-mode .message-card {
+    background: #1e293b;
+    border-color: #334155;
+    border-left-color: #64748b;
+}
+
+body.dark-mode .message-card.critical {
+    background: rgba(127, 29, 29, 0.25);
+    border-color: rgba(248, 113, 113, 0.35);
+    border-left-color: #ef4444;
+}
+
+body.dark-mode .message-card.urgent {
+    background: rgba(120, 53, 15, 0.25);
+    border-color: rgba(251, 191, 36, 0.35);
+    border-left-color: #f59e0b;
+}
+
+body.dark-mode .message-dept,
+body.dark-mode .message-heading {
+    color: #f1f5f9;
+}
+
+body.dark-mode .message-text {
+    color: #cbd5e1;
+}
+
+body.dark-mode .message-subtag,
+body.dark-mode .message-badge {
+    background: #0f172a;
+    color: #cbd5e1;
+}
+
+body.dark-mode .critical .message-badge {
+    background: rgba(239, 68, 68, 0.25);
+    color: #fca5a5;
+}
+
+body.dark-mode .urgent .message-badge {
+    background: rgba(245, 158, 11, 0.25);
+    color: #fcd34d;
+}
+
+body.dark-mode .empty-state,
+body.dark-mode .data-state {
+    color: #94a3b8;
+}
+
+body.dark-mode .developer-mode {
+    background: #111827;
+    border-color: #1f2937;
+}
+
+body.dark-mode .developer-mode > summary {
+    color: #cbd5e1;
+}
+
+body.dark-mode .developer-status,
+body.dark-mode .raw-group h3 {
+    color: #94a3b8;
+}
+
+body.dark-mode .raw-details {
+    border-top-color: #1f2937;
+}
+
+body.dark-mode .raw-details summary {
+    color: #60a5fa;
+}
+
+body.dark-mode .raw-pair,
+body.dark-mode .raw-msg-card,
+body.dark-mode .severe-row,
+body.dark-mode .equipment-item {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.dark-mode .raw-msg-title {
+    color: #f1f5f9;
+}
+
+body.dark-mode .raw-pair .field-code,
+body.dark-mode .field-code {
+    color: #94a3b8;
+}
+
+body.dark-mode .cluster-dialog,
+body.dark-mode .notice-card {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.8);
+}
+
+body.dark-mode .cluster-item {
+    background: #1e293b;
+    border-color: #334155;
+    border-left: 4px solid var(--hospital-color);
+    color: #f1f5f9;
+}
+
+body.dark-mode .cluster-item small {
+    color: #94a3b8;
+}
+
+body.dark-mode .notice-copy strong {
+    color: #fb7185;
 }

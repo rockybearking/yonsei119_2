@@ -32,22 +32,24 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>연세 119 응급실 정보 시스템</title>
-    <link rel="icon" type="image/png" href="./Assets/통신_logo.png">
+    <link rel="icon" type="image/png" href="./Assets/공공데이터포탈_logo.png">
     <link rel="preconnect" href="https://hangeul.pstatic.net" crossorigin>
     <link rel="preconnect" href="https://oapi.map.naver.com" crossorigin>
+    <!--suppress JSUnresolvedLibraryURL -->
     <link rel="stylesheet" href="https://hangeul.pstatic.net/hangeul_static/css/nanum-square-neo.css">
     <link rel="stylesheet" href="style.css">
     <!--
-      [네이버 지도 JS v3 SDK 로드]
+      [네이버 지도 JS v3 SDK 로드 (+ GL 커스텀 스타일 서브모듈)]
       Application 이름: YONSEI-PROJECT / Client ID (ncpKeyId): xfbxloc8km
+      다크모드 Custom Style ID('4b12b380-f70c-4d42-85df-ecf7961ff041') 적용을 위해 submodules=gl을 함께 로드합니다.
+      주의: maps.js가 submodules=gl(maps-gl.js)을 동기 로드할 수 있도록 maps.js에는 defer를 붙이지 않고,
+      app.js에만 defer를 부여하여 GL 서브모듈 로드 완료 후 앱이 초기화되도록 보장합니다.
     -->
-    <script
-            src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=xfbxloc8km"
-            defer
-    ></script>
+    <!--suppress JSUnresolvedLibraryURL -->
+    <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=xfbxloc8km&submodules=gl"></script>
     <script src="app.js" defer></script>
 </head>
-<body>
+<body class="dark-mode" data-theme="dark">
 <!-- ==========================================================================
      [1. 메인 지도 뷰포트 (#map)]
      - 네이버 지도(naver.maps.Map) 인스턴스가 마운트되는 최하단 풀스크린 레이어입니다.
@@ -101,6 +103,44 @@
         </div>
     </div>
 </header>
+
+<!-- ==========================================================================
+     [2-1. 좌측 하단 다크모드 / 라이트모드 전환 동그라미 아이콘 버튼 (#theme-toggle)]
+     - 최초 접속 시 기본 적용 상태는 '다크(dark)' 모드입니다.
+     - 동그라미 사이즈는 우측 하단 검색 상자(#search-panel) 내부의 동그라미 아이콘 버튼과
+       완전히 동일한 크기(clamp(36px, 10vw, 42px))로 맞춰져 있습니다.
+     - 클릭 시 네이버 지도(customStyleId: 4b12b380-f70c-4d42-85df-ecf7961ff041 ↔ 일반 라이트 지도)와
+       모든 UI 컴포넌트의 다크/라이트 테마가 동시에 전환됩니다.
+     ========================================================================== -->
+<button
+        id="theme-toggle"
+        class="map-action theme-toggle-fab"
+        type="button"
+        aria-pressed="true"
+        aria-label="라이트 모드로 전환 (현재 다크 모드)"
+        title="라이트 모드로 전환"
+>
+    <!-- 다크 모드 상태에서 표시되는 달(Moon) 아이콘 -->
+    <svg
+            id="theme-icon-moon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+    >
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+    </svg>
+    <!-- 라이트 모드 상태에서 표시되는 해(Sun) 아이콘 -->
+    <svg
+            id="theme-icon-sun"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+            hidden
+    >
+        <circle cx="12" cy="12" r="4.5"></circle>
+        <path d="M12 2v2.5 M12 19.5V22 M4.93 4.93l1.77 1.77 M17.3 17.3l1.77 1.77 M2 12h2.5 M19.5 12H22 M4.93 19.07l1.77-1.77 M17.3 6.7l1.77-1.77"></path>
+    </svg>
+</button>
 
 <!-- ==========================================================================
      [3. 지도 상단 활성 자동차 경로 안내 배너 (#active-route-banner)]
@@ -265,7 +305,6 @@
                         placeholder="병원 이름 검색"
                         aria-controls="search-results"
                         enterkeyhint="search"
-                        autocorrect="off"
                         autocapitalize="off"
                         spellcheck="false"
                 >

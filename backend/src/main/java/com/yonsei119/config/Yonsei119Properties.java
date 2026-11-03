@@ -7,12 +7,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * [클래스 역할]
  * `application.yml`의 `yonsei119.*` 설정 계층을 타입 안전(Type-Safe)하고
  * 불변(Immutable)인 Java 17 Record로 바인딩하는 구성 프로퍼티 클래스입니다.
- *
+ * <p>
  * [담당 기능]
  * 1. 국립중앙의료원(NEMC) OpenAPI 주소, 인증키, 캐시 TTL, 타임아웃 값을 보유합니다.
  * 2. 네이버 클라우드 플랫폼(NCP) Client ID, Client Secret, Directions 5 / 15 URL을 보유합니다.
  * 3. 프론트엔드 초기 기준 좌표(연세대학교 미래캠퍼스) 정보를 보유합니다.
- *
+ * <p>
  * [수정 시 영향 및 예시]
  * - `application.yml`의 `yonsei119` 하위에 새 설정(예: `max-radius-km: 150`)을 추가할 경우,
  *   이 레코드에 필드를 하나 추가하면 스프링이 자동으로 값을 주입해 줍니다.
@@ -59,12 +59,14 @@ public record Yonsei119Properties(
      * 네이버 클라우드 플랫폼(NCP) Maps JS v3 및 Directions 5 / Directions 15 설정값 묶음입니다.
      *
      * @param clientId        NCP Application Client ID (`X-NCP-APIGW-API-KEY-ID` / `ncpKeyId`)
+     * @param darkStyleId     네이버 지도 Style Editor 다크 모드(야간 관제) Custom Style ID
      * @param clientSecret    NCP Application Client Secret (`X-NCP-APIGW-API-KEY`)
      * @param directions5Url  네이버 Directions 5 REST API 엔드포인트 URL
      * @param directions15Url 네이버 Directions 15 REST API 엔드포인트 URL
      */
     public record Naver(
             String clientId,
+            String darkStyleId,
             String clientSecret,
             String directions5Url,
             String directions15Url

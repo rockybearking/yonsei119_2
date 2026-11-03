@@ -20,13 +20,13 @@ import java.util.Map;
  * ============================================================================
  * [클래스 역할]
  * 프론트엔드 웹 애플리케이션(`frontend/app.js`)과 통신하는 핵심 REST API 컨트롤러입니다.
- *
+ * <p>
  * [담당 기능]
  * 1. `GET /api/health` : Render 클라우드 배포 헬스체크 및 서버 상태 확인 엔드포인트
  * 2. `GET /api/config` : 네이버 지도 JS v3 공개 Client ID(`ncpKeyId`) 및 초기 기준 위치 반환
  * 3. `GET /api/hospitals` : 전국 응급의료기관 통합 실시간 데이터(7개 OpenAPI 병합본) 반환
  * 4. `GET /api/directions` : 네이버 Directions 5 및 Directions 15 기반 자동차 경로 및 예상 소요 시간 조회
- *
+ * <p>
  * [수정 시 영향 및 예시]
  * - API 버저닝을 도입하여 모든 엔드포인트 경로를 `/api/v1/...`으로 변경하고 싶다면
  *   클래스 상단의 `@RequestMapping("/api")`를 `@RequestMapping("/api/v1")`로 변경하고
@@ -78,6 +78,7 @@ public class EmergencyApiController {
     public ResponseEntity<FrontendConfigDto> getConfig() {
         FrontendConfigDto config = new FrontendConfigDto(
                 properties.naver().clientId(),
+                properties.naver().darkStyleId(),
                 properties.defaultOrigin().lat(),
                 properties.defaultOrigin().lng(),
                 properties.defaultOrigin().label()
@@ -88,7 +89,7 @@ public class EmergencyApiController {
     /**
      * [메서드 역할]
      * 국립중앙의료원(NEMC) 7개 OpenAPI가 통합·분류된 전국 응급의료기관 실시간 스냅샷을 반환합니다.
-     *
+     * <p>
      * [파라미터 설명]
      * - `refresh=false` (기본값): 캐시 유효 시간(TTL) 이내이면 인메모리 캐시 스냅샷을 즉시 반환합니다.
      * - `refresh=true` : 사용자가 우측 하단 '새로고침' 버튼을 눌렀을 때 캐시를 강제 갱신합니다.
@@ -108,7 +109,7 @@ public class EmergencyApiController {
      * [메서드 역할]
      * 네이버 클라우드 플랫폼 **Directions 5** 또는 **Directions 15** API를 호출하여
      * 현재 출발 기준점에서 선택한 응급의료기관까지의 자동차 주행 경로와 예상 소요 시간(ETA)을 반환합니다.
-     *
+     * <p>
      * [호출 예시]
      * {@code GET /api/directions?startLat=37.31904&startLng=127.90123&goalLat=37.31912&goalLng=127.94561&apiType=directions5&option=trafast}
      *
