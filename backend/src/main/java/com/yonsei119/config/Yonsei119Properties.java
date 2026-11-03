@@ -42,7 +42,7 @@ public record Yonsei119Properties(
      * @param cacheTtlSeconds    전국 병원 스냅샷 인메모리 캐시 유지 시간(초)
      * @param requestTimeoutMs   개별 OpenAPI HTTP 요청 타임아웃(밀리초)
      * @param autoRefreshEnabled 서버 시작 즉시 사전 로딩(Pre-warming) 및 백그라운드 주기적 자동 갱신 활성화 여부
-     * @param refreshIntervalMs  백그라운드 스케줄러 자동 갱신 주기(밀리초, 기본 45000ms = 45초)
+     * @param refreshIntervalMs  백그라운드 스케줄러 자동 갱신 주기(밀리초, 기본 1200000ms = 20분)
      */
     public record Nemc(
             String baseUrl,

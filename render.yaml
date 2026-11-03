@@ -9,9 +9,9 @@
 # 3. 국립중앙의료원 OpenAPI 및 네이버 클라우드 플랫폼(NCP) API 키 환경변수를 주입합니다.
 #
 # [수정 시 영향 및 예시]
-# - 캐시 유지 시간을 45초에서 90초로 늘리고 싶다면 `NEMC_CACHE_TTL_SECONDS`의 value를 수정합니다:
-#   변경 전: value: "45"
-#   변경 후: value: "90"
+# - 캐시 유지 시간을 20분(1200초)에서 10분(600초)으로 변경하고 싶다면 `NEMC_CACHE_TTL_SECONDS`의 value를 수정합니다:
+#   변경 전: value: "1200"
+#   변경 후: value: "600"
 # ==============================================================================
 
 services:
@@ -26,7 +26,9 @@ services:
       - key: JAVA_OPTS
         value: "-XX:MaxRAMPercentage=75.0 -Dfile.encoding=UTF-8"
       - key: NEMC_CACHE_TTL_SECONDS
-        value: "45"
+        value: "1200"
+      - key: NEMC_REFRESH_INTERVAL_MS
+        value: "1200000"
       - key: NAVER_MAP_CLIENT_ID
         value: "xfbxloc8km"
       - key: NAVER_MAP_CLIENT_SECRET

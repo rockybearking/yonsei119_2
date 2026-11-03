@@ -50,13 +50,13 @@ yonsei119:
     # 공공데이터포털 일반 인증키 (URL Encoded 형식 권장, Decoded 형식 입력 시 백엔드가 자동 인코딩 처리)
     service-key: ${NEMC_API_SERVICE_KEY:s%2FvWNiKH1YndVRu2mPOq7OXAIj%2Byk0M3JTgvN%2B8UVdSFPq8SBR7zuUdG3mxklTrj6WYIiUidSIUwgE8bz09fzQ%3D%3D}
 
-    # [기능 설명] 실시간 병원 스냅샷 인메모리 캐시 유효 시간(초)
+    # [기능 설명] 실시간 병원 스냅샷 인메모리 캐시 유효 시간(초, 기본 1200 = 20분)
     # [수정 시 영향 및 예시]
     # 너무 짧게(예: 5초) 설정하면 공공데이터포털 트래픽 한도를 빠르게 소진할 수 있고,
-    # 너무 길게(예: 600초) 설정하면 병상 갱신 주기가 느려집니다.
-    #   예시(변경 전): cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:45}
-    #   예시(변경 후, 2분 주기로 변경): cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:120}
-    cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:45}
+    # 너무 길게 설정하면 자동 병상 갱신 주기가 길어집니다 (수동 '새로고침' 버튼 클릭 시에는 즉시 강제 갱신됨).
+    #   예시(변경 전, 20분 주기): cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:1200}
+    #   예시(변경 후, 10분 주기로 변경): cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:600}
+    cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:1200}
 
     # [기능 설명] 공공데이터포털 개별 API 요청 타임아웃(밀리초)
     request-timeout-ms: ${NEMC_REQUEST_TIMEOUT_MS:20000}
@@ -68,12 +68,12 @@ yonsei119:
     # - false: 첫 사용자가 접속했을 때만 데이터를 조회합니다 (단위 테스트 등에서 사용).
     auto-refresh-enabled: ${NEMC_AUTO_REFRESH_ENABLED:true}
 
-    # [기능 설명] 백그라운드 자동 캐시 갱신 주기(밀리초, 기본 45000 = 45초)
+    # [기능 설명] 백그라운드 자동 캐시 갱신 주기(밀리초, 기본 1200000 = 20분)
     # [수정 시 영향 및 예시]
-    # - 1분(60초)마다 갱신하도록 바꾸고 싶다면:
-    #   변경 전: refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:45000}
-    #   변경 후: refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:60000}
-    refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:45000}
+    # - 10분(600초)마다 갱신하도록 바꾸고 싶다면:
+    #   변경 전: refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:1200000}
+    #   변경 후: refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:600000}
+    refresh-interval-ms: ${NEMC_REFRESH_INTERVAL_MS:1200000}
 
   # ----------------------------------------------------------------------------
   # 2. 네이버 클라우드 플랫폼(NCP) 지도 및 자동차 경로 탐색(Directions 5 / 15) 설정
