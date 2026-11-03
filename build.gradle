@@ -1,0 +1,44 @@
+/*
+ * ============================================================================
+ * [파일 역할]
+ * 모노레포 루트 Gradle 빌드 스크립트 (Root build.gradle)
+ *
+ * [담당 기능]
+ * 1. 모노레포 전체의 그룹 ID(com.yonsei119)와 버전(2.0.0)을 일괄 지정합니다.
+ * 2. 루트 경로에서도 `./gradlew bootRun`, `./gradlew bootJar`를 바로 실행할 수 있도록
+ *    하위 `:backend` 모듈의 태스크로 위임(Shortcut Task)을 연결합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 프로젝트 전체 버전을 올릴 때 `version` 값을 수정하면 빌드 산출물(JAR)의 버전이 바뀝니다.
+ *   예시(변경 전): version = '2.0.0'
+ *   예시(변경 후): version = '2.1.0'
+ * ============================================================================
+ */
+allprojects {
+    group = 'com.yonsei119'
+    version = '2.0.0'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+/*
+ * [기능 설명]
+ * 루트 폴더에서 `./gradlew bootRun` 실행 시 `:backend:bootRun`이 실행되도록 연결합니다.
+ */
+tasks.register('bootRun') {
+    group = 'application'
+    description = 'Runs the Spring Boot backend application (:backend:bootRun).'
+    dependsOn(':backend:bootRun')
+}
+
+/*
+ * [기능 설명]
+ * 루트 폴더에서 `./gradlew bootJar` 실행 시 `:backend:bootJar`가 실행되도록 연결합니다.
+ */
+tasks.register('bootJar') {
+    group = 'build'
+    description = 'Assembles an executable jar archive containing both backend and frontend (:backend:bootJar).'
+    dependsOn(':backend:bootJar')
+}

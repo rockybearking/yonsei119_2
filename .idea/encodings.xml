@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  [파일 역할]
+  IntelliJ IDEA 파일 인코딩 설정 파일 (.idea/encodings.xml)
+  모든 소스 코드와 설정 파일(.java, .yml, .properties, .html, .css, .js)을 UTF-8로 고정하여
+  Windows 환경에서도 한글 주석 및 문자열이 깨지지 않도록 보장합니다.
+-->
+<project version="4">
+  <component name="Encoding" defaultCharsetForPropertiesFiles="UTF-8">
+    <file url="PROJECT" charset="UTF-8" />
+  </component>
+</project>

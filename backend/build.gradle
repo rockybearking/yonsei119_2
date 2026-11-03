@@ -1,0 +1,102 @@
+/*
+ * ============================================================================
+ * [파일 역할]
+ * 백엔드(Java Spring Boot) 모듈 Gradle 빌드 설정 파일 (backend/build.gradle)
+ *
+ * [담당 기능]
+ * 1. Java 17 LTS 기반의 Spring Boot 웹 애플리케이션 의존성을 구성합니다.
+ * 2. 모노레포의 `../frontend` 폴더(index.html, style.css, app.js, Assets)를
+ *    빌드 시점에 백엔드 클래스패스(`static/`)로 자동 복사하여,
+ *    Render 배포 환경에서 단일 실행형 JAR(`yonsei119-backend.jar`) 하나로
+ *    프론트엔드와 백엔드 API를 동시에 서빙할 수 있도록 패키징합니다.
+ * 3. IntelliJ IDEA에서 바로 실행(Run/Debug)할 수 있도록 작업 디렉터리와 UTF-8 인코딩을 고정합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - Java 버전을 21로 올리고 싶다면 `JavaLanguageVersion.of(17)`을 `21`로 변경합니다.
+ *   예시(변경 전): languageVersion = JavaLanguageVersion.of(17)
+ *   예시(변경 후): languageVersion = JavaLanguageVersion.of(21)
+ * - 배포용 JAR 파일 이름을 바꾸고 싶다면 `bootJar { archiveFileName = ... }`을 수정합니다.
+ *   예시(변경 전): archiveFileName = 'yonsei119-backend.jar'
+ *   예시(변경 후): archiveFileName = 'app.jar'
+ * ============================================================================
+ */
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.2'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    // Spring MVC 웹 서버 및 REST API, 정적 리소스 서빙 지원
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+
+    // JUnit 5 및 Spring Boot 통합 테스트 지원
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+/*
+ * [기능 설명]
+ * 모든 Java 컴파일 단계에서 UTF-8 인코딩과 메서드 파라미터 이름 보존(-parameters)을 활성화합니다.
+ * 이를 건들면 한글 주석이나 문자열이 Windows 기본 인코딩(MS949)에서 깨질 수 있습니다.
+ */
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.add('-parameters')
+}
+
+// [기능 설명]
+// 모노레포의 `frontend/` 디렉터리에 있는 정적 웹 파일(index.html, style.css, app.js, Assets/ 등)을
+// 백엔드 빌드 리소스 폴더(`build/resources/main/static`)로 복사하는 태스크입니다.
+//
+// [수정 시 영향 및 예시]
+// - 프론트엔드에 새 폴더(예: `frontend/icons/`)를 추가하더라도 `from('../frontend')` 전체를
+//   복사하므로 별도 수정 없이 자동 반영됩니다.
+// - 만약 특정 임시 파일(예: `.bak` 확장자)을 배포에서 제외하고 싶다면 아래와 같이 `exclude`를 추가합니다:
+//   예시:
+//     from('../frontend') {
+//         exclude '**/*.bak', '**/.DS_Store'
+//     }
+tasks.register('copyFrontendToStatic', Copy) {
+    description = 'Copies frontend static files into backend static resources for single-JAR deployment.'
+    from('../frontend') {
+        exclude '**/.DS_Store', '**/Thumbs.db'
+    }
+    into layout.buildDirectory.dir('resources/main/static')
+}
+
+tasks.named('processResources') {
+    dependsOn('copyFrontendToStatic')
+}
+
+/*
+ * [기능 설명]
+ * Render 클라우드 및 Docker 컨테이너 배포 시 고정된 파일명(`yonsei119-backend.jar`)으로
+ * 실행 가능한 Fat JAR를 생성합니다. 일반 plain JAR 생성은 비활성화하여 혼선을 방지합니다.
+ */
+tasks.named('bootJar') {
+    archiveFileName = 'yonsei119-backend.jar'
+}
+
+tasks.named('jar') {
+    enabled = false
+}
+
+/*
+ * [기능 설명]
+ * IntelliJ IDEA 또는 CLI에서 `bootRun` 실행 시 모노레포 루트 폴더를 작업 디렉터리로 지정하여
+ * `frontend/` 파일 수정 시 재빌드 없이도 즉시 반영될 수 있게 설정합니다.
+ */
+tasks.named('bootRun') {
+    workingDir = rootProject.projectDir
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

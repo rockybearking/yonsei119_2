@@ -1,0 +1,30 @@
+<!--
+  [파일 역할]
+  IntelliJ IDEA 우측 상단 실행(Run/Debug) 드롭다운에 자동으로 표시되는 실행 구성 파일입니다.
+  IntelliJ에서 프로젝트를 열자마자 초록색 실행(▶) 또는 벌레 모양 디버그(🐞) 버튼을 누르면
+  Gradle `:backend:bootRun` 태스크로 백엔드와 프론트엔드가 함께 실행됩니다.
+-->
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Yonsei119Application (Spring Boot)" type="GradleRunConfiguration" factoryName="Gradle">
+    <ExternalSystemSettings>
+      <option name="executionName" />
+      <option name="externalProjectPath" value="$PROJECT_DIR$" />
+      <option name="externalSystemIdString" value="GRADLE" />
+      <option name="scriptParameters" value="" />
+      <option name="taskDescriptions">
+        <list />
+      </option>
+      <option name="taskNames">
+        <list>
+          <option value=":backend:bootRun" />
+        </list>
+      </option>
+      <option name="vmOptions" value="-Dfile.encoding=UTF-8" />
+    </ExternalSystemSettings>
+    <ExternalSystemDebugServerProcess>true</ExternalSystemDebugServerProcess>
+    <ExternalSystemReattachDebugProcess>true</ExternalSystemReattachDebugProcess>
+    <DebugAllEnabled>false</DebugAllEnabled>
+    <RunAsTest>false</RunAsTest>
+    <method v="2" />
+  </configuration>
+</component>

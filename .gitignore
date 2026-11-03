@@ -1,0 +1,33 @@
+# ==============================================================================
+# [파일 역할]
+# Git 형상관리 제외 대상 설정 파일 (.gitignore)
+# Gradle 빌드 산출물, OS 임시 파일, 개인 IDE 캐시 파일이 GitHub에 올라가지 않도록 보호합니다.
+# ==============================================================================
+
+# Gradle build artifacts
+.gradle/
+build/
+backend/.gradle/
+backend/build/
+!gradle/wrapper/gradle-wrapper.jar
+!backend/gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ IDEA user-specific workspace files (공유 설정인 encodings/gradle/vcs/runConfigurations는 유지 가능)
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/dictionaries/
+.idea/shelf/
+*.iws
+*.iml
+*.ipr
+out/
+
+# OS & Temp files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+.env
+.env.local

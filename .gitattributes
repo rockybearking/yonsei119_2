@@ -1,0 +1,17 @@
+# ==============================================================================
+# [파일 역할]
+# Windows(IntelliJ) 개발 환경과 Linux(Render Docker) 배포 환경 간의 줄바꿈(Line Ending) 호환 설정
+# 특히 `gradlew` 쉘 스크립트가 Windows에서 체크아웃되더라도 LF를 유지하여
+# Docker 빌드 시 `/bin/sh^M: bad interpreter` 오류가 발생하지 않도록 보장합니다.
+# ==============================================================================
+
+* text=auto eol=lf
+gradlew text eol=lf
+*.sh text eol=lf
+gradlew.bat text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.jar binary

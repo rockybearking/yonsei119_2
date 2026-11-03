@@ -1,0 +1,35 @@
+# ==============================================================================
+# [파일 역할]
+# Render 클라우드 플랫폼 Blueprint 배포 설정 파일 (render.yaml)
+#
+# [담당 기능]
+# 1. GitHub 저장소를 Render에 연결할 때 단일 컨테이너(Frontend + Spring Boot Backend)
+#    웹 서비스를 자동으로 구성합니다.
+# 2. `/api/health` 엔드포인트를 통해 무중단 배포(Zero-Downtime Deploy) 헬스체크를 수행합니다.
+# 3. 국립중앙의료원 OpenAPI 및 네이버 클라우드 플랫폼(NCP) API 키 환경변수를 주입합니다.
+#
+# [수정 시 영향 및 예시]
+# - 캐시 유지 시간을 45초에서 90초로 늘리고 싶다면 `NEMC_CACHE_TTL_SECONDS`의 value를 수정합니다:
+#   변경 전: value: "45"
+#   변경 후: value: "90"
+# ==============================================================================
+
+services:
+  - type: web
+    name: yonsei119
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: JAVA_OPTS
+        value: "-XX:MaxRAMPercentage=75.0 -Dfile.encoding=UTF-8"
+      - key: NEMC_CACHE_TTL_SECONDS
+        value: "45"
+      - key: NAVER_MAP_CLIENT_ID
+        value: "xfbxloc8km"
+      - key: NAVER_MAP_CLIENT_SECRET
+        sync: false
+      - key: NEMC_API_SERVICE_KEY
+        sync: false

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  [파일 역할]
+  IntelliJ IDEA JDK 및 언어 레벨 설정 파일 (.idea/misc.xml)
+  Java 17 LTS 기준으로 프로젝트 루트 SDK를 설정합니다.
+-->
+<project version="4">
+  <component name="ExternalStorageConfigurationManager" enabled="true" />
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_17" default="true" project-jdk-name="17" project-jdk-type="JavaSDK">
+    <output url="file://$PROJECT_DIR$/build/classes" />
+  </component>
+</project>
