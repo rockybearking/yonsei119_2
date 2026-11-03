@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ============================================================================
  * [클래스 역할]
  * 연세 119 응급실 정보 시스템 백엔드의 핵심 도메인 로직을 검증하는 통합 테스트 클래스입니다.
- *
+ * <p>
  * [검증 항목]
  * 1. 제5기 상급종합병원 / 권역응급의료센터 / 의료원 / 일반·기타 자동 분류 정확도 검증
  * 2. 현장 실사 도메인 규칙(음수 병상 = 초과수용 `-4` 보존, 빈 값 `""` 보존) XML 파싱 검증
@@ -203,6 +203,24 @@ class Yonsei119BackendTests {
                           [127.920100, 37.319500],
                           [127.945610, 37.319120]
                         ],
+                        "section": [
+                          {
+                            "pointIndex": 0,
+                            "pointCount": 2,
+                            "distance": 5200,
+                            "name": "서원대로",
+                            "congestion": 2,
+                            "speed": 32
+                          },
+                          {
+                            "pointIndex": 1,
+                            "pointCount": 2,
+                            "distance": 3250,
+                            "name": "일산로",
+                            "congestion": 3,
+                            "speed": 14
+                          }
+                        ],
                         "guide": [
                           {"instructions": "연세대길 방면 우회전"},
                           {"instructions": "일산로 방면 직진"},
@@ -231,6 +249,11 @@ class Yonsei119BackendTests {
         assertEquals("약 16분", dto.durationText());
         assertEquals(11800, dto.taxiFare());
         assertEquals(3, dto.path().size());
+        assertEquals(2, dto.sections().size());
+        assertEquals("서원대로", dto.sections().get(0).name());
+        assertEquals(2, dto.sections().get(0).congestion());
+        assertEquals("일산로", dto.sections().get(1).name());
+        assertEquals(3, dto.sections().get(1).congestion());
         assertFalse(dto.guidePrompts().isEmpty());
     }
 }

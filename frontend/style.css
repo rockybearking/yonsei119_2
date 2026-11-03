@@ -2742,6 +2742,125 @@ h3 {
     padding-top: 8px;
 }
 
+/* 구간별 실시간 교통 혼잡도(원활·서행·정체) 범례 및 도로 칩 스타일 */
+.directions-traffic-summary {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #dbece1;
+    border-radius: 10px;
+    background: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.directions-traffic-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 11px;
+    color: #475569;
+}
+
+.traffic-legend-title {
+    font-family: var(--font-bold), sans-serif;
+    color: #334155;
+    margin-right: 2px;
+}
+
+.traffic-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 700;
+}
+
+.traffic-legend-item::before {
+    content: "";
+    display: inline-block;
+    width: 14px;
+    height: 5px;
+    border-radius: 999px;
+}
+
+.traffic-legend-item.smooth::before {
+    background: #03c75a;
+}
+
+.traffic-legend-item.slow::before {
+    background: #f59e0b;
+}
+
+.traffic-legend-item.jam::before {
+    background: #ef4444;
+}
+
+.directions-section-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.directions-section-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    border: 1px solid transparent;
+}
+
+.directions-section-chip.congestion-smooth {
+    background: #dcfce7;
+    color: #166534;
+    border-color: #86efac;
+}
+
+.directions-section-chip.congestion-slow {
+    background: #fef3c7;
+    color: #92400e;
+    border-color: #fcd34d;
+}
+
+.directions-section-chip.congestion-jam {
+    background: #fee2e2;
+    color: #991b1b;
+    border-color: #fca5a5;
+}
+
+body.dark-mode .directions-traffic-summary {
+    background: rgba(15, 23, 42, 0.72);
+    border-color: rgba(148, 163, 184, 0.22);
+}
+
+body.dark-mode .directions-traffic-legend {
+    color: #cbd5e1;
+}
+
+body.dark-mode .traffic-legend-title {
+    color: #f1f5f9;
+}
+
+body.dark-mode .directions-section-chip.congestion-smooth {
+    background: rgba(22, 101, 52, 0.35);
+    color: #86efac;
+    border-color: rgba(74, 222, 128, 0.4);
+}
+
+body.dark-mode .directions-section-chip.congestion-slow {
+    background: rgba(146, 64, 14, 0.38);
+    color: #fde68a;
+    border-color: rgba(251, 191, 36, 0.45);
+}
+
+body.dark-mode .directions-section-chip.congestion-jam {
+    background: rgba(153, 27, 27, 0.42);
+    color: #fca5a5;
+    border-color: rgba(248, 113, 113, 0.5);
+}
+
 .directions-guide-details summary {
     color: #166534;
     font-size: 12px;

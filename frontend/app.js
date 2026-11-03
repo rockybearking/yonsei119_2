@@ -230,6 +230,7 @@ const state = {
     locationMarker: null,
     routePolyline: null,
     routeOutlinePolyline: null,
+    routeSectionPolylines: [],
     activeRouteData: null,
     locating: false,
     origin: { lat: DEFAULT_ORIGIN.lat, lng: DEFAULT_ORIGIN.lng },
@@ -1536,14 +1537,25 @@ function updateSearch() {
 
 /**
  * [함수 역할]
- * 지도 위에 그려진 네이버 자동차 경로 폴리라인(`routePolyline`, `routeOutlinePolyline`)과
- * 상단 플로팅 배너(`#active-route-banner`)를 제거합니다.
+ * 지도 위에 그려진 네이버 자동차 경로 폴리라인(`routePolyline`, `routeOutlinePolyline`,
+ * 구간별 혼잡도 폴리라인 `routeSectionPolylines`)과 상단 플로팅 배너(`#active-route-banner`)를 제거합니다.
  */
 function clearRouteOnMap() {
     state.routePolyline?.setMap(null);
     state.routePolyline = null;
     state.routeOutlinePolyline?.setMap(null);
     state.routeOutlinePolyline = null;
+
+    if (Array.isArray(state.routeSectionPolylines)) {
+        for (const poly of state.routeSectionPolylines) {
+            try {
+                poly?.setMap(null);
+            } catch {
+                // 구간 폴리라인 해제 중 예외 무시
+            }
+        }
+    }
+    state.routeSectionPolylines = [];
 
     const banner = byId('active-route-banner');
     if (banner) {
@@ -1557,14 +1569,49 @@ function clearRouteOnMap() {
 
 /**
  * [함수 역할]
- * 네이버 Directions 5 / 15 API가 반환한 경로 좌표 배열(`data.path`)을 사용하여
- * 네이버 지도(`state.map`) 위에 시인성 높은 이중 폴리라인(외곽선 + 메인 네이버 그린 라인)을 그리고,
- * 출발지와 도착 병원이 한눈에 보이도록 지도 경계(Bounds)를 피팅합니다.
+ * 네이버 Directions API의 실시간 혼잡도 코드(`congestion`: 1 원활, 2 서행, 3 정체)에 대응하는
+ * 폴리라인 색상·외곽선 색상·한글 상태명을 반환합니다.
+ *
+ * @param {number} congestion 혼잡도 코드 (`0`: 정보없음, `1`: 원활, `2`: 서행, `3`: 정체)
+ * @returns {{label: string, badgeClass: string, strokeColor: string, outlineColor: string, zIndex: number}}
+ */
+function getCongestionStyle(congestion) {
+    if (congestion === 3) {
+        return {
+            label: '정체',
+            badgeClass: 'congestion-jam',
+            strokeColor: '#ef4444',
+            outlineColor: '#7f1d1d',
+            zIndex: 98
+        };
+    }
+    if (congestion === 2) {
+        return {
+            label: '서행',
+            badgeClass: 'congestion-slow',
+            strokeColor: '#f59e0b',
+            outlineColor: '#78350f',
+            zIndex: 97
+        };
+    }
+    return {
+        label: '원활',
+        badgeClass: 'congestion-smooth',
+        strokeColor: '#03c75a',
+        outlineColor: '#064e3b',
+        zIndex: 96
+    };
+}
+
+/**
+ * [함수 역할]
+ * 네이버 Directions 5 / 15 API가 반환한 경로 좌표 배열(`data.path`)과 구간별 실시간 혼잡도(`data.sections`)를
+ * 사용하여 네이버 지도(`state.map`) 위에 실시간 교통 소통 색상(원활: 초록 `#03c75a`, 서행: 주황 `#f59e0b`,
+ * 정체: 빨강 `#ef4444`)이 반영된 다중 폴리라인을 그리고, 출발지와 도착 병원이 한눈에 보이도록 피팅합니다.
  *
  * [수정 시 영향 및 예시]
- * - 폴리라인 색상을 네이버 그린(`#03c75a`)에서 응급 레드(`#e11d48`)로 변경하고 싶다면:
- *   변경 전: strokeColor: '#03c75a'
- *   변경 후: strokeColor: '#e11d48'
+ * - 정체 구간 색상을 빨간색(`#ef4444`)에서 자주색(`#be123c`)으로 바꾸고 싶다면
+ *   위 `getCongestionStyle(3)`의 `strokeColor` 값을 수정하면 됩니다.
  *
  * @param {Object} hospital 목적지 병원 객체
  * @param {Object} data `/api/directions` 응답 DTO 객체
@@ -1583,19 +1630,19 @@ function drawRouteOnMap(hospital, data) {
 
     const latLngPath = data.path.map(([lng, lat]) => new naver.maps.LatLng(lat, lng));
 
-    // 1. 외곽선 폴리라인 (지도 배경과 명확히 구분되도록 진한 테두리 역할)
+    // 1. 전체 경로 기본 외곽선 폴리라인 (지도 배경과 명확히 구분되도록 진한 테두리 역할)
     state.routeOutlinePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
         map: state.map,
         path: latLngPath,
-        strokeColor: '#064e3b',
+        strokeColor: state.darkMode ? '#022c22' : '#064e3b',
         strokeWeight: 9,
-        strokeOpacity: 0.45,
+        strokeOpacity: 0.55,
         strokeLineCap: 'round',
         strokeLineJoin: 'round',
         zIndex: 90
     }));
 
-    // 2. 메인 주행 경로 폴리라인
+    // 2. 전체 경로 기본 베이스 라인 (section 미포함 일반 도로 구간까지 끊김 없이 원활 그린으로 연결)
     state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
         map: state.map,
         path: latLngPath,
@@ -1607,7 +1654,53 @@ function drawRouteOnMap(hospital, data) {
         zIndex: 95
     }));
 
-    // 3. 상단 플로팅 활성 경로 배너 표시
+    // 3. 구간별 실시간 혼잡도(data.sections: 서행 2 / 정체 3) 컬러 폴리라인 오버레이
+    if (Array.isArray(data.sections) && data.sections.length > 0) {
+        for (const sec of data.sections) {
+            if (sec.congestion !== 2 && sec.congestion !== 3) {
+                continue;
+            }
+            const startIdx = Math.max(0, Number(sec.pointIndex) || 0);
+            const count = Math.max(0, Number(sec.pointCount) || 0);
+            const endIdx = Math.min(latLngPath.length - 1, startIdx + count);
+            if (endIdx <= startIdx) {
+                continue;
+            }
+
+            const segmentCoords = latLngPath.slice(startIdx, endIdx + 1);
+            if (segmentCoords.length < 2) {
+                continue;
+            }
+
+            const style = getCongestionStyle(sec.congestion);
+
+            const segOutline = guardGlShapeRedraw(new naver.maps.Polyline({
+                map: state.map,
+                path: segmentCoords,
+                strokeColor: style.outlineColor,
+                strokeWeight: 9,
+                strokeOpacity: 0.6,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                zIndex: style.zIndex - 1
+            }));
+
+            const segLine = guardGlShapeRedraw(new naver.maps.Polyline({
+                map: state.map,
+                path: segmentCoords,
+                strokeColor: style.strokeColor,
+                strokeWeight: 6,
+                strokeOpacity: 0.98,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                zIndex: style.zIndex
+            }));
+
+            state.routeSectionPolylines.push(segOutline, segLine);
+        }
+    }
+
+    // 4. 상단 플로팅 활성 경로 배너 표시
     const banner = byId('active-route-banner');
     if (banner) {
         byId('active-route-api').textContent = data.apiLabel || 'Directions 5';
@@ -1621,7 +1714,7 @@ function drawRouteOnMap(hospital, data) {
         clearBtn.hidden = false;
     }
 
-    // 4. 경로 전체가 보이도록 지도 영역 피팅
+    // 5. 경로 전체가 보이도록 지도 영역 피팅
     const bounds = new naver.maps.LatLngBounds(latLngPath[0], latLngPath[0]);
     for (const pt of latLngPath) {
         bounds.extend(pt);
@@ -1741,6 +1834,34 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
 
         kpiGrid.append(etaCard, distCard, fareCard);
         container.replaceChildren(kpiGrid);
+
+        // 실시간 구간별 교통 소통 범례(원활·서행·정체) 및 주요 도로 혼잡도 배지 표시
+        const trafficBox = node('div', 'directions-traffic-summary');
+        const legendRow = node('div', 'directions-traffic-legend');
+        legendRow.append(
+            node('span', 'traffic-legend-title', '경로 소통 색상'),
+            node('span', 'traffic-legend-item smooth', '원활'),
+            node('span', 'traffic-legend-item slow', '서행'),
+            node('span', 'traffic-legend-item jam', '정체')
+        );
+        trafficBox.append(legendRow);
+
+        if (Array.isArray(data.sections) && data.sections.length > 0) {
+            const chipWrap = node('div', 'directions-section-chips');
+            for (const sec of data.sections) {
+                const style = getCongestionStyle(sec.congestion);
+                const roadName = sec.name || '주요 구간';
+                const speedText = sec.speed > 0 ? ` ${sec.speed}km/h` : '';
+                const chip = node(
+                    'span',
+                    `directions-section-chip ${style.badgeClass}`,
+                    `${roadName} · ${style.label}${speedText}`
+                );
+                chipWrap.append(chip);
+            }
+            trafficBox.append(chipWrap);
+        }
+        container.append(trafficBox);
 
         // 주요 회전/주행 안내(guidePrompts)가 있으면 접이식 목록으로 제공
         if (Array.isArray(data.guidePrompts) && data.guidePrompts.length > 0) {
