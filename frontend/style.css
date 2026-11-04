@@ -109,7 +109,6 @@ summary:focus-visible {
 
 /* 지도 위 패널 */
 
-.top-panel,
 .search-panel {
     position: fixed;
     z-index: 10;
@@ -121,33 +120,11 @@ summary:focus-visible {
     backdrop-filter: blur(12px);
 }
 
-.top-panel {
-    top: calc(var(--edge) + env(safe-area-inset-top));
-    left: calc(var(--edge) + env(safe-area-inset-left));
-    width: min(
-            260px,
-            calc(
-                    100vw - 2 * var(--edge) -
-                    env(safe-area-inset-left) -
-                    env(safe-area-inset-right)
-            )
-    );
-    padding: var(--panel-padding);
-}
-
 .panel-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-}
-
-.top-heading {
-    align-items: flex-start;
-}
-
-.top-summary {
-    min-width: 0;
 }
 
 .updated-line {
@@ -163,52 +140,6 @@ summary:focus-visible {
     font-variant-numeric: tabular-nums;
 }
 
-.institution-count {
-    margin: 5px 0 0;
-    color: #243c58;
-    font-size: 15px;
-    line-height: 1.4;
-    font-family: var(--font-bold), sans-serif;
-}
-
-#top-content {
-    margin-top: 10px;
-}
-
-#status {
-    margin: 0 0 9px;
-    color: #53677e;
-    font-size: 11px;
-    line-height: 1.55;
-    overflow-wrap: anywhere;
-}
-
-.coordinates {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    width: 100%;
-    margin: 0;
-    padding: 9px 10px;
-    border-radius: 10px;
-    background: #edf5ff;
-    color: #204c84;
-    font-size: 11px;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-    font-variant-numeric: tabular-nums;
-}
-
-.coordinates span {
-    font-size: 12px;
-    font-family: var(--font-bold), sans-serif;
-}
-
-.coordinates small {
-    color: #64758a;
-    font-size: 10px;
-}
-
 .text-button {
     border: 0;
     padding: 8px 0;
@@ -216,18 +147,6 @@ summary:focus-visible {
     background: transparent;
     cursor: pointer;
     font-size: 12px;
-}
-
-.top-tools {
-    display: flex;
-    align-items: center;
-    margin-top: 6px;
-}
-
-#notice-open {
-    min-height: 28px;
-    padding: 4px 0;
-    font-size: 11px;
 }
 
 .panel-toggle {
@@ -378,7 +297,7 @@ summary:focus-visible {
     right: calc(var(--edge) + env(safe-area-inset-right));
     bottom: calc(var(--edge) + env(safe-area-inset-bottom));
     width: min(
-            344px,
+            392px,
             calc(
                     100vw - 2 * var(--edge) -
                     var(--action-size) - var(--ui-gap) -
@@ -2221,18 +2140,6 @@ h3 {
 }
 
 @media (max-height: 450px) {
-    .top-panel {
-        max-height: calc(
-                100dvh - 2 * var(--edge) - var(--action-size) - 16px
-        );
-        overflow: auto;
-    }
-
-    #top-content {
-        max-height: 24dvh;
-        overflow: auto;
-    }
-
     .map-actions {
         flex-direction: row;
         bottom: calc(var(--edge) + env(safe-area-inset-bottom));
@@ -2240,7 +2147,7 @@ h3 {
 
     .search-panel {
         width: min(
-                344px,
+                392px,
                 calc(
                         100vw - 2 * var(--edge) -
                         3 * var(--action-size) -
@@ -2333,28 +2240,6 @@ h3 {
 
 /* 내용에 맞는 패널과 검색 제목 옆 지도 버튼 */
 
-.top-panel {
-    width: max-content;
-    max-width: calc(
-            100vw - 2 * var(--edge) -
-            env(safe-area-inset-left) -
-            env(safe-area-inset-right)
-    );
-}
-
-.top-heading {
-    gap: 8px;
-}
-
-#status {
-    contain: inline-size;
-}
-
-.coordinates {
-    width: max-content;
-    max-width: 100%;
-}
-
 .search-panel {
     --action-size: clamp(36px, 10vw, 42px);
 
@@ -2424,12 +2309,12 @@ h3 {
 }
 
 .filters {
-    grid-template-columns: repeat(4, max-content);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: space-between;
 }
 
 .filters label {
-    padding-inline: 5px;
+    padding-inline: 6px;
 }
 
 @media (max-width: 360px) {
@@ -2459,11 +2344,10 @@ h3 {
 
 /* ==========================================================================
    [신규 고도화 스타일]
-   1. 좌측 상단 타이틀 정리 (.top-panel-title)
-   2. 우측 하단 검색 박스 내 새로고침 버튼 우측 갱신 시간 배지 (.search-updated-pill)
-   3. 네이버 Directions 5 / Directions 15 자동차 경로 탐색 섹션 (.directions-section)
-   4. 지도 상단 플로팅 활성 경로 배너 (.active-route-banner)
-   5. Modern Web Guidance: 모달/시트 내부 스크롤 체이닝 방지 (overscroll-behavior: contain)
+   1. 우측 하단 검색 박스 내 새로고침·다크모드 버튼 우측 갱신 시간 배지 (.search-updated-pill)
+   2. 네이버 Directions 5 / Directions 15 자동차 경로 탐색 섹션 (.directions-section)
+   3. 지도 상단 플로팅 활성 경로 배너 (.active-route-banner)
+   4. Modern Web Guidance: 모달/시트 내부 스크롤 체이닝 방지 (overscroll-behavior: contain)
    ========================================================================== */
 
 /* [기능 설명] 모달 및 바텀시트 스크롤 시 뒤쪽 배경이 함께 스크롤되는 현상(Scroll Chaining) 차단 */
@@ -2471,16 +2355,6 @@ h3 {
 .cluster-dialog,
 .notice-dialog {
     overscroll-behavior: contain;
-}
-
-/* [기능 설명] 좌측 상단 패널에서 '530개 기관' 제거 후 표시되는 깔끔한 관제 타이틀 */
-.top-panel-title {
-    margin: 0;
-    color: #1e3a5f;
-    font-size: 13px;
-    font-family: var(--font-bold), sans-serif;
-    line-height: 1.4;
-    letter-spacing: -0.01em;
 }
 
 /*
@@ -2995,64 +2869,26 @@ body.dark-mode .directions-section-chip.congestion-jam {
 }
 
 /* ==========================================================================
-   [다크 모드(야간 관제 테마) & 좌측 하단 테마 전환 동그라미 버튼 (#theme-toggle)]
+   [다크 모드(야간 관제 테마) & 검색 패널 내 테마 전환 동그라미 버튼 (#theme-toggle)]
    - 요구사항 반영:
      1) 최초 접속 시 기본 상태는 '다크(dark)' 모드로 시작합니다.
-     2) 좌측 하단에 위치한 '#theme-toggle' 동그라미 버튼의 크기는
-        우측 하단 검색 상자(#search-panel) 내부의 동그라미 아이콘 버튼과
-        완전히 동일한 크기(clamp(36px, 10vw, 42px), 아이콘 19px)로 지정했습니다.
+     2) 검색 상자(#search-panel)의 새로고침 버튼(#refresh-button)과 갱신 시간 배지(.search-updated-pill)
+        사이에 통합된 '#theme-toggle' 동그라미 버튼은 다른 액션 버튼들과 동일한 크기(clamp(36px, 10vw, 42px), 아이콘 19px)를 유지합니다.
      3) 네이버 지도(customStyleId: 4b12b380-f70c-4d42-85df-ecf7961ff041)뿐만 아니라
-        상단 패널, 검색 박스, 병원 마커 카드, 상세창(중앙 모달/우측 슬라이더/모바일 바텀시트),
+        검색 박스, 병원 마커 카드, 상세창(중앙 모달/우측 슬라이더/모바일 바텀시트),
         E-Gen 현황판, 다이얼로그까지 모든 UI에 다크 테마가 일관되게 적용됩니다.
-
-   [유지보수 수정 예시]
-   - 좌측 하단 다크모드 버튼의 위치를 바닥에서 조금 더 위로(예: 28px) 올리고 싶다면:
-     변경 전: bottom: calc(var(--edge) + env(safe-area-inset-bottom));
-     변경 후: bottom: calc(28px + env(safe-area-inset-bottom));
    ========================================================================== */
 
-.theme-toggle-fab {
-    --action-size: clamp(36px, 10vw, 42px);
-    position: fixed;
-    left: calc(var(--edge) + env(safe-area-inset-left));
-    bottom: calc(var(--edge) + env(safe-area-inset-bottom));
-    z-index: 12;
-    width: var(--action-size);
-    height: var(--action-size);
-    flex: 0 0 var(--action-size);
-    border-radius: 50%;
-    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.25);
-    touch-action: manipulation;
+.theme-toggle-btn {
     transition:
         background-color 0.18s ease,
         border-color 0.18s ease,
         color 0.18s ease,
-        transform 0.15s ease,
-        bottom 0.2s ease;
+        transform 0.15s ease;
 }
 
-.theme-toggle-fab svg {
-    width: 19px;
-    height: 19px;
-}
-
-.theme-toggle-fab:active {
+.theme-toggle-btn:active {
     transform: scale(0.94);
-}
-
-/* 좁은 모바일 화면에서 검색 박스가 펼쳐져 있을 때 버튼이 겹치지 않도록 검색 박스 위로 자동 이동 */
-@media (max-width: 560px) {
-    .theme-toggle-fab {
-        bottom: calc(
-            var(--search-panel-height, 154px) +
-            var(--edge) + 10px +
-            env(safe-area-inset-bottom)
-        );
-    }
-
-    body.search-collapsed .theme-toggle-fab {
-        bottom: calc(var(--edge) + env(safe-area-inset-bottom));
-    }
 }
 
 /* --------------------------------------------------------------------------
@@ -3069,8 +2905,7 @@ body.dark-mode #map {
     background: #0b1120;
 }
 
-/* 1. 상단 관제 패널(.top-panel) 및 하단 검색 패널(.search-panel) */
-body.dark-mode .top-panel,
+/* 1. 하단 검색 패널(.search-panel) */
 body.dark-mode .search-panel,
 body.dark-mode .radius-popover,
 body.dark-mode .search-results {
@@ -3080,25 +2915,13 @@ body.dark-mode .search-results {
     color: #e2e8f0;
 }
 
-body.dark-mode .top-panel-title,
 body.dark-mode .search-heading,
 body.dark-mode .radius-popover h2 {
     color: #f1f5f9;
 }
 
-body.dark-mode #status,
 body.dark-mode #radius-help,
 body.dark-mode .map-count {
-    color: #94a3b8;
-}
-
-body.dark-mode .coordinates {
-    background: #1e293b;
-    border: 1px solid #334155;
-    color: #93c5fd;
-}
-
-body.dark-mode .coordinates small {
     color: #94a3b8;
 }
 
@@ -3131,15 +2954,12 @@ body.dark-mode .map-action[aria-expanded="true"] {
     border-color: #60a5fa;
 }
 
-body.dark-mode .theme-toggle-fab {
-    background: rgba(15, 23, 42, 0.94);
-    border-color: #475569;
+body.dark-mode .theme-toggle-btn {
     color: #fbbf24;
-    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.65);
 }
 
-body.dark-mode .theme-toggle-fab:hover {
-    background: #1e293b;
+body.dark-mode .theme-toggle-btn:hover {
+    background: #273549;
     border-color: #fbbf24;
 }
 

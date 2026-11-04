@@ -745,60 +745,6 @@ function distanceKm(a, b) {
 
 /**
  * [함수 역할]
- * 십진수 위경도 좌표를 도·분·초(DMS) 형식으로 변환합니다.
- */
-function formatDms(value, positive, negative) {
-    const tenths = Math.round(Math.abs(value) * 36000);
-    const degrees = Math.floor(tenths / 36000);
-    const minutes = Math.floor((tenths % 36000) / 600);
-    const seconds = (tenths % 600) / 10;
-    const direction = value >= 0 ? positive : negative;
-
-    return `${direction} ${degrees}° ${minutes}′ ${seconds.toFixed(1)}″`;
-}
-
-/**
- * [함수 역할]
- * 좌측 상단 패널(`#coordinates`)의 현재 기준점 좌표 텍스트를 갱신합니다.
- */
-function updateCoordinates() {
-    updateRadiusUI();
-
-    const target = byId('coordinates');
-    target.replaceChildren();
-
-    if (!state.locationKnown) {
-        target.append(
-            node('span', '', '내 위치 미확인'),
-            node('small', '', `지도 기준점: ${DEFAULT_ORIGIN.label}`)
-        );
-        return;
-    }
-
-    target.append(
-        node('span', '', formatDms(state.origin.lat, '북위', '남위')),
-        node('span', '', formatDms(state.origin.lng, '동경', '서경'))
-    );
-
-    if (Number.isFinite(state.locationAccuracy)) {
-        target.append(
-            node('small', '', `오차 반경 약 ${Math.round(state.locationAccuracy)}m`)
-        );
-    }
-
-    if (state.locationUpdated) {
-        const measured = state.locationUpdated.toLocaleTimeString('ko-KR', {
-            timeZone: 'Asia/Seoul',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        });
-        target.append(node('small', '', `측정 ${measured}`));
-    }
-}
-
-/**
- * [함수 역할]
  * 현재 네이버 지도 인스턴스(`state.map`)가 오버레이(`Circle`, `Polyline`, `OverlayView`) 및
  * 좌표 투영(`Projection`)을 처리할 준비가 완료되었는지 확인합니다.
  *
@@ -1054,7 +1000,7 @@ function locate() {
             state.locationAccuracy = position.coords.accuracy;
             state.locationUpdated = new Date(position.timestamp || Date.now());
 
-            updateCoordinates();
+            updateRadiusUI();
             updateLocationMarker();
 
             if (!state.selected) {
@@ -1075,7 +1021,7 @@ function locate() {
                 ? '위치 권한이 허용되지 않았습니다.'
                 : '현재 위치를 확인하지 못했습니다.';
 
-            updateCoordinates();
+            updateRadiusUI();
             setStatus(
                 reason +
                 (state.locationKnown
@@ -3212,7 +3158,7 @@ function openHospital(hospital, focus = true) {
 }
 
 function setBackgroundInert(value) {
-    for (const selector of ['#map', '#top-panel', '#search-panel', '#theme-toggle']) {
+    for (const selector of ['#map', '#search-panel']) {
         const el = document.querySelector(selector);
         if (el) {
             el.inert = value;
@@ -3381,10 +3327,9 @@ function fitBounds(bounds) {
     }
 
     const height = byId('map').clientHeight || window.innerHeight;
-    const topPanel = document.querySelector('.top-panel');
     const searchPanel = document.querySelector('.search-panel');
 
-    const top = Math.min((topPanel?.offsetHeight || 80) + 24, height * 0.28);
+    const top = 32;
     const bottom = Math.min((searchPanel?.offsetHeight || 120) + 24, height * 0.25);
 
     try {
@@ -3490,7 +3435,7 @@ function initNotice() {
         dialog.close();
     });
 
-    byId('notice-open').addEventListener('click', openNotice);
+    byId('notice-open')?.addEventListener('click', openNotice);
 
     const previewMode = new URLSearchParams(window.location.search).get('preview');
     if (!noticeHidden() && (!previewMode || previewMode === 'notice')) {
@@ -3504,32 +3449,25 @@ function initPanels() {
         document.documentElement.style.setProperty('--search-panel-height', `${height}px`);
     };
 
-    const panels = [
-        ['top', '지도 정보'],
-        ['search', '검색']
-    ];
+    const button = byId('search-toggle');
+    const content = byId('search-content');
+    const panel = byId('search-panel');
 
-    for (const [prefix, label] of panels) {
-        const button = byId(`${prefix}-toggle`);
-        const content = byId(`${prefix}-content`);
-        const panel = byId(`${prefix}-panel`);
-
+    if (button && content && panel) {
         button.addEventListener('click', () => {
             const collapsed = button.getAttribute('aria-expanded') === 'true';
 
             content.hidden = collapsed;
             panel.classList.toggle('is-collapsed', collapsed);
             button.setAttribute('aria-expanded', String(!collapsed));
-            button.setAttribute('aria-label', `${label} ${collapsed ? '펼치기' : '접기'}`);
+            button.setAttribute('aria-label', `검색 ${collapsed ? '펼치기' : '접기'}`);
             button.textContent = collapsed ? '펼치기' : '접기';
 
-            if (prefix === 'search') {
-                document.body.classList.toggle('search-collapsed', collapsed);
-                if (collapsed) {
-                    byId('search-results').hidden = true;
-                } else {
-                    updateSearch();
-                }
+            document.body.classList.toggle('search-collapsed', collapsed);
+            if (collapsed) {
+                byId('search-results').hidden = true;
+            } else {
+                updateSearch();
             }
 
             updateHeight();
@@ -3865,7 +3803,7 @@ function applyTheme(isDark, remountMap = true) {
 
 /**
  * [함수 역할]
- * 좌측 하단 다크모드 동그라미 토글 버튼(`#theme-toggle`) 클릭 이벤트를 초기화합니다.
+ * 검색 패널 내 다크모드 동그라미 토글 버튼(`#theme-toggle`) 클릭 이벤트를 초기화합니다.
  */
 function initThemeToggle() {
     applyTheme(true, false);
@@ -3913,7 +3851,7 @@ function init() {
         fitBounds(bounds);
     });
 
-    updateCoordinates();
+    updateRadiusUI();
 
     byId('search-form').addEventListener('submit', event => {
         event.preventDefault();
