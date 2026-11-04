@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -47,6 +48,13 @@ import java.util.concurrent.Executors;
  * 4. 현장 실사 도메인 규칙 보존:
  *    - XML 태그 내부 텍스트를 파싱할 때 음수 값(예: `-4`, 초과수용 의미)이나 `0`, 빈 문자열(`""`)을
  *      절대 임의 변환하지 않고 원본 문자열 그대로 보존합니다.
+ * 5. Render 클라우드(Free 플랜 0.1 vCPU & 해외 리전) 안정성 강화:
+ *    - 7개 대용량 API를 한꺼번에 동시 호출할 때 발생하는 CPU 스로틀링 및 공공데이터포털 게이트웨이 지연을
+ *      방지하기 위해 동시 요청 수를 {@link #MAX_CONCURRENT_REQUESTS}(2개)로 제한하고 HTTP/1.1 Keep-Alive
+ *      TLS 세션을 재사용합니다.
+ *    - 간헐적 네트워크 타임아웃 발생 시 지수 백오프(Exponential Backoff)로 최대 {@link #MAX_ATTEMPTS_PER_PAGE}회
+ *      자동 재시도하며, 모든 재시도가 실패하더라도 직전 정상 수집 데이터(`lastSuccessfulByOperation`)를
+ *      폴백(Fallback)으로 반환하여 병상·중증질환·메시지 데이터가 유실되지 않도록 보호합니다.
  *
  * [수정 시 영향 및 예시]
  * - 페이지당 요청 건수를 1000건에서 500건으로 줄이고 싶다면 {@link #DEFAULT_ROWS_PER_PAGE} 상수를 수정합니다.
@@ -64,6 +72,18 @@ public class NmcOpenApiClient {
 
     /** 무한 루프 방지를 위한 단일 오퍼레이션당 최대 페이지 조회 한도 */
     private static final int MAX_PAGES = 10;
+
+    /**
+     * Render Free 플랜(0.1 vCPU) 스로틀링 및 공공데이터포털 동시 연결 제한 방지를 위한 최대 동시 요청 스레드 수.
+     * 2개 스레드가 HTTP/1.1 Keep-Alive 커넥션 풀의 TLS 소켓을 재사용하여 순차·병렬 수집합니다.
+     */
+    private static final int MAX_CONCURRENT_REQUESTS = 2;
+
+    /** 단일 페이지 HTTP 요청 시 최대 시도 횟수 (초기 1회 + 재시도 2회 = 총 3회) */
+    private static final int MAX_ATTEMPTS_PER_PAGE = 3;
+
+    /** 재시도 간 기본 대기 시간(밀리초, 1차 재시도 800ms -> 2차 재시도 1600ms) */
+    private static final long RETRY_BASE_BACKOFF_MS = 800L;
 
     /**
      * 국립중앙의료원 OpenAPI 7대 핵심 전국 조회 오퍼레이션 정의 맵.
@@ -90,10 +110,18 @@ public class NmcOpenApiClient {
     private final HttpClient httpClient;
     private final ExecutorService fetchExecutor;
 
+    /**
+     * 개별 오퍼레이션별로 가장 최근에 정상 수집된 아이템 목록을 보관하는 스레드 안전 캐시입니다.
+     * 특정 오퍼레이션(예: `getEmrrmSrsillDissMsgInqire`, `getSrsillDissAceptncPosblInfoInqire`)이
+     * 모든 재시도 후에도 타임아웃될 경우, 빈 목록(`List.of()`)으로 기존 캐시를 덮어쓰지 않고
+     * 직전 정상 데이터를 폴백(Fallback)으로 반환하여 데이터 유실을 방지합니다.
+     */
+    private final Map<String, List<Map<String, String>>> lastSuccessfulByOperation = new ConcurrentHashMap<>();
+
     public NmcOpenApiClient(Yonsei119Properties properties) {
         this.properties = properties;
         long timeoutMs = Math.max(5000L, properties.nemc().requestTimeoutMs());
-        this.fetchExecutor = Executors.newFixedThreadPool(ENDPOINTS.size());
+        this.fetchExecutor = Executors.newFixedThreadPool(MAX_CONCURRENT_REQUESTS);
         // 주의: HttpClient 내부 비동기 SSL/소켓 이벤트 루프가 호출 스레드 풀(fetchExecutor)과
         // 데드락(Thread Starvation)을 일으키지 않도록 별도의 기본 스레드 풀과 HTTP/1.1을 사용합니다.
         this.httpClient = HttpClient.newBuilder()
@@ -105,7 +133,7 @@ public class NmcOpenApiClient {
 
     /**
      * [메서드 역할]
-     * 7개 NEMC OpenAPI 엔드포인트를 병렬(`CompletableFuture`)로 동시에 호출하여
+     * 7개 NEMC OpenAPI 엔드포인트를 제한 병렬(`MAX_CONCURRENT_REQUESTS = 2`)로 호출하여
      * 엔드포인트 키별 아이템 목록 맵을 반환합니다.
      *
      * @return 엔드포인트 식별자(`list`, `basic`, `beds` 등)별 파싱된 아이템 리스트 맵
@@ -120,12 +148,15 @@ public class NmcOpenApiClient {
 
         Map<String, List<Map<String, String>>> results = new LinkedHashMap<>();
         for (Map.Entry<String, CompletableFuture<List<Map<String, String>>>> entry : futures.entrySet()) {
+            String key = entry.getKey();
+            String operation = ENDPOINTS.get(key);
             try {
-                results.put(entry.getKey(), entry.getValue().join());
+                results.put(key, entry.getValue().join());
             } catch (Exception ex) {
-                log.warn("NEMC OpenAPI 엔드포인트 [{}] 수집 중 예외 발생 (빈 목록으로 대체): {}",
-                        entry.getKey(), ex.getMessage());
-                results.put(entry.getKey(), List.of());
+                List<Map<String, String>> fallback = lastSuccessfulByOperation.getOrDefault(operation, List.of());
+                log.warn("NEMC OpenAPI 엔드포인트 [{}] 수집 중 예외 발생 (직전 정상 데이터 {}건으로 폴백): {}",
+                        key, fallback.size(), ex.getMessage());
+                results.put(key, fallback);
             }
         }
         return results;
@@ -135,15 +166,22 @@ public class NmcOpenApiClient {
      * [메서드 역할]
      * 특정 OpenAPI 오퍼레이션(예: `getEmrrmRltmUsefulSckbdInfoInqire`)의 1페이지부터 마지막 페이지까지
      * 전체 아이템을 조회하여 리스트로 반환합니다.
+     * 만약 네트워크 타임아웃 등으로 수집에 실패하면 직전 정상 수집 데이터(`lastSuccessfulByOperation`)를 반환합니다.
      *
      * @param operation 국립중앙의료원 OpenAPI 오퍼레이션 이름
-     * @return 해당 오퍼레이션에서 수신한 전체 XML {@code <item>} 맵 리스트
+     * @return 해당 오퍼레이션에서 수신한 전체 XML {@code <item>} 맵 리스트 (실패 시 직전 정상 데이터 폴백)
      */
     public List<Map<String, String>> fetchAllPages(String operation) {
         List<Map<String, String>> mergedItems = new ArrayList<>();
         int page = 1;
+        boolean allPagesSucceeded = true;
+
         while (page <= MAX_PAGES) {
             ParsedXmlPage parsed = fetchSinglePage(operation, page, DEFAULT_ROWS_PER_PAGE);
+            if (!parsed.success()) {
+                allPagesSucceeded = false;
+                break;
+            }
             if (parsed.items().isEmpty()) {
                 break;
             }
@@ -153,12 +191,27 @@ public class NmcOpenApiClient {
             }
             page++;
         }
+
+        if (allPagesSucceeded) {
+            List<Map<String, String>> snapshot = List.copyOf(mergedItems);
+            lastSuccessfulByOperation.put(operation, snapshot);
+            return snapshot;
+        }
+
+        List<Map<String, String>> fallback = lastSuccessfulByOperation.get(operation);
+        if (fallback != null && !fallback.isEmpty() && mergedItems.size() < fallback.size()) {
+            log.warn("NEMC OpenAPI [{}] 호출 실패로 직전 정상 캐시 데이터({}건)를 폴백(Fallback)으로 유지합니다.",
+                    operation, fallback.size());
+            return fallback;
+        }
         return mergedItems;
     }
 
     /**
      * [메서드 역할]
      * 단일 페이지의 OpenAPI URL을 조립하고 HTTP GET 요청을 수행한 뒤 XML 응답을 파싱합니다.
+     * 일시적인 네트워크 타임아웃이나 게이트웨이 지연 발생 시 최대 {@link #MAX_ATTEMPTS_PER_PAGE}회까지
+     * 지수 백오프(800ms -> 1600ms)를 두고 자동 재시도합니다.
      *
      * @param operation 오퍼레이션명
      * @param pageNo    페이지 번호 (1부터 시작)
@@ -172,31 +225,69 @@ public class NmcOpenApiClient {
                 "%s/%s?serviceKey=%s&pageNo=%d&numOfRows=%d",
                 baseUrl, operation, encodedKey, pageNo, numOfRows
         );
+        long timeoutMs = Math.max(5000L, properties.nemc().requestTimeoutMs());
+        String lastFailureReason = "unknown";
 
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(requestUrl))
-                    .timeout(Duration.ofMillis(Math.max(5000L, properties.nemc().requestTimeoutMs())))
-                    .header("Accept", "application/xml, text/xml, */*")
-                    .GET()
-                    .build();
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS_PER_PAGE; attempt++) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(requestUrl))
+                        .timeout(Duration.ofMillis(timeoutMs))
+                        .header("Accept", "application/xml, text/xml, */*")
+                        .GET()
+                        .build();
 
-            HttpResponse<String> response = httpClient.send(
-                    request,
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-            );
+                HttpResponse<String> response = httpClient.send(
+                        request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                );
 
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.warn("NEMC OpenAPI HTTP 상태코드 비정상: operation={}, status={}",
-                        operation, response.statusCode());
-                return new ParsedXmlPage(0, List.of());
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    lastFailureReason = "HTTP status " + response.statusCode();
+                    if (attempt < MAX_ATTEMPTS_PER_PAGE) {
+                        log.info("NEMC OpenAPI HTTP 상태코드 비정상 ({}차 시도, 재시도 예정): operation={}, page={}, status={}",
+                                attempt, operation, pageNo, response.statusCode());
+                        sleepBeforeRetry(attempt);
+                        continue;
+                    }
+                    log.warn("NEMC OpenAPI HTTP 상태코드 비정상 (최종 실패): operation={}, page={}, status={}",
+                            operation, pageNo, response.statusCode());
+                    return new ParsedXmlPage(0, List.of(), false);
+                }
+
+                ParsedXmlPage parsed = parseXmlResponse(response.body(), operation);
+                if (!parsed.success() && attempt < MAX_ATTEMPTS_PER_PAGE) {
+                    lastFailureReason = "invalid XML or non-00 resultCode";
+                    log.info("NEMC OpenAPI 응답 비정상 ({}차 시도, 재시도 예정): operation={}, page={}",
+                            attempt, operation, pageNo);
+                    sleepBeforeRetry(attempt);
+                    continue;
+                }
+                if (attempt > 1 && parsed.success()) {
+                    log.info("NEMC OpenAPI 재시도 성공 ({}차 시도): operation={}, page={}, 수신건수={}",
+                            attempt, operation, pageNo, parsed.items().size());
+                }
+                return parsed;
+            } catch (Exception ex) {
+                lastFailureReason = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+                if (attempt < MAX_ATTEMPTS_PER_PAGE) {
+                    log.info("NEMC OpenAPI 일시적 호출 지연 ({}차 시도/{}회, 재시도 예정): operation={}, page={}, 사유={}",
+                            attempt, MAX_ATTEMPTS_PER_PAGE, operation, pageNo, lastFailureReason);
+                    sleepBeforeRetry(attempt);
+                } else {
+                    log.warn("NEMC OpenAPI 호출 실패 (총 {}회 시도 소진): operation={}, page={}, 사유={}",
+                            MAX_ATTEMPTS_PER_PAGE, operation, pageNo, lastFailureReason);
+                }
             }
+        }
+        return new ParsedXmlPage(0, List.of(), false);
+    }
 
-            return parseXmlResponse(response.body(), operation);
-        } catch (Exception ex) {
-            log.warn("NEMC OpenAPI 호출 실패: operation={}, page={}, 사유={}",
-                    operation, pageNo, ex.getMessage());
-            return new ParsedXmlPage(0, List.of());
+    private static void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(RETRY_BASE_BACKOFF_MS * attempt);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -241,7 +332,7 @@ public class NmcOpenApiClient {
      */
     public ParsedXmlPage parseXmlResponse(String xmlText, String operation) {
         if (xmlText == null || xmlText.isBlank()) {
-            return new ParsedXmlPage(0, List.of());
+            return new ParsedXmlPage(0, List.of(), false);
         }
 
         try {
@@ -261,7 +352,7 @@ public class NmcOpenApiClient {
                 String resultMsg = getFirstTagText(doc, "resultMsg");
                 log.warn("NEMC OpenAPI 응답 에러 코드: operation={}, resultCode={}, resultMsg={}",
                         operation, resultCode, resultMsg);
-                return new ParsedXmlPage(0, List.of());
+                return new ParsedXmlPage(0, List.of(), false);
             }
 
             int totalCount = 0;
@@ -296,10 +387,10 @@ public class NmcOpenApiClient {
                     items.add(fieldMap);
                 }
             }
-            return new ParsedXmlPage(totalCount, items);
+            return new ParsedXmlPage(totalCount, items, true);
         } catch (Exception ex) {
             log.warn("NEMC OpenAPI XML 파싱 실패: operation={}, 사유={}", operation, ex.getMessage());
-            return new ParsedXmlPage(0, List.of());
+            return new ParsedXmlPage(0, List.of(), false);
         }
     }
 
@@ -317,10 +408,15 @@ public class NmcOpenApiClient {
      *
      * @param totalCount XML {@code <totalCount>} 값
      * @param items      추출된 {@code <item>} 맵 리스트
+     * @param success    HTTP 통신 및 XML 파싱 성공 여부 (타임아웃/에러 시 {@code false})
      */
     public record ParsedXmlPage(
             int totalCount,
-            List<Map<String, String>> items
+            List<Map<String, String>> items,
+            boolean success
     ) {
+        public ParsedXmlPage(int totalCount, List<Map<String, String>> items) {
+            this(totalCount, items, true);
+        }
     }
 }

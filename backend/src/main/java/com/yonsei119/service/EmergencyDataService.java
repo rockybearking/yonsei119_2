@@ -277,8 +277,23 @@ public class EmergencyDataService {
         Map<String, Map<String, String>> traumaListById = groupSingleById(traumaListItems);
         Map<String, Map<String, String>> traumaBasicById = groupSingleById(traumaBasicItems);
 
+        // 직전 정상 캐시 스냅샷이 존재할 경우, 특정 API가 일시적 타임아웃으로 비어 있더라도
+        // 기관별 기존 데이터(basic, trauma, beds, severe, messages)가 null/빈 값으로 덮어써지지 않도록 보존합니다.
+        Map<String, HospitalDto> previousById = new LinkedHashMap<>();
+        EmergencySnapshotDto previousSnapshot = this.cachedSnapshot;
+        if (previousSnapshot != null && previousSnapshot.hospitals() != null) {
+            for (HospitalDto prevHospital : previousSnapshot.hospitals()) {
+                if (prevHospital.id() != null && !prevHospital.id().isBlank()) {
+                    previousById.put(prevHospital.id(), prevHospital);
+                }
+            }
+        }
+
         Set<String> uniqueIds = new LinkedHashSet<>(listById.keySet());
         uniqueIds.addAll(traumaListById.keySet());
+        if (uniqueIds.isEmpty() && !previousById.isEmpty()) {
+            uniqueIds.addAll(previousById.keySet());
+        }
 
         List<HospitalDto> hospitals = new ArrayList<>(uniqueIds.size());
         int tertiaryCount = 0;
@@ -288,8 +303,12 @@ public class EmergencyDataService {
         int otherCount = 0;
 
         for (String id : uniqueIds) {
+            HospitalDto prev = previousById.get(id);
             Map<String, String> listFields = listById.getOrDefault(id, traumaListById.getOrDefault(id, Map.of()));
             Map<String, String> basicFields = basicById.getOrDefault(id, Map.of());
+            if (basicFields.isEmpty() && prev != null && prev.basic() != null) {
+                basicFields = prev.basic();
+            }
 
             Map<String, String> mergedBasic = new LinkedHashMap<>(basicFields);
             for (Map.Entry<String, String> entry : listFields.entrySet()) {
@@ -300,10 +319,26 @@ public class EmergencyDataService {
                     id,
                     traumaListById.getOrDefault(id, null)
             );
+            if (traumaFields == null && traumaListItems.isEmpty() && traumaBasicItems.isEmpty()
+                    && prev != null && prev.trauma() != null) {
+                traumaFields = prev.trauma();
+            }
 
             Map<String, String> beds = bedsById.get(id);
+            if (beds == null && bedItems.isEmpty() && prev != null && prev.beds() != null) {
+                beds = prev.beds();
+            }
+
             Map<String, String> severe = severeById.get(id);
+            if (severe == null && severeItems.isEmpty() && prev != null && prev.severe() != null) {
+                severe = prev.severe();
+            }
+
             List<Map<String, String>> messages = messagesById.getOrDefault(id, List.of());
+            if (messages.isEmpty() && messageItems.isEmpty() && prev != null
+                    && prev.messages() != null && !prev.messages().isEmpty()) {
+                messages = prev.messages();
+            }
 
             double lat = parseCoordinate(
                     firstNonBlank(
@@ -313,6 +348,10 @@ public class EmergencyDataService {
                             listFields.get("latitude")
                     )
             );
+            if (!Double.isFinite(lat) && prev != null) {
+                lat = prev.lat();
+            }
+
             double lng = parseCoordinate(
                     firstNonBlank(
                             listFields.get("wgs84lon"),
@@ -321,18 +360,34 @@ public class EmergencyDataService {
                             listFields.get("longitude")
                     )
             );
+            if (!Double.isFinite(lng) && prev != null) {
+                lng = prev.lng();
+            }
 
             if (!isValidKoreaCoordinate(lat, lng)) {
                 continue;
             }
 
-            String name = displayValue(firstNonBlank(listFields.get("dutyname"), basicFields.get("dutyname")));
-            String address = displayValue(firstNonBlank(listFields.get("dutyaddr"), basicFields.get("dutyaddr")));
-            String tel = displayValue(firstNonBlank(listFields.get("dutytel1"), basicFields.get("dutytel1")));
+            String name = displayValue(firstNonBlank(
+                    listFields.get("dutyname"),
+                    basicFields.get("dutyname"),
+                    prev != null ? prev.name() : null
+            ));
+            String address = displayValue(firstNonBlank(
+                    listFields.get("dutyaddr"),
+                    basicFields.get("dutyaddr"),
+                    prev != null ? prev.address() : null
+            ));
+            String tel = displayValue(firstNonBlank(
+                    listFields.get("dutytel1"),
+                    basicFields.get("dutytel1"),
+                    prev != null ? prev.tel() : null
+            ));
             String erTel = displayValue(firstNonBlank(
                     listFields.get("dutytel3"),
                     basicFields.get("dutytel3"),
-                    beds != null ? beds.get("dutytel3") : null
+                    beds != null ? beds.get("dutytel3") : null,
+                    prev != null ? prev.erTel() : null
             ));
 
             Map<String, String> classificationFields = new LinkedHashMap<>(basicFields);

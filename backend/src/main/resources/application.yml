@@ -58,8 +58,8 @@ yonsei119:
     #   예시(변경 후, 10분 주기로 변경): cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:600}
     cache-ttl-seconds: ${NEMC_CACHE_TTL_SECONDS:1200}
 
-    # [기능 설명] 공공데이터포털 개별 API 요청 타임아웃(밀리초)
-    request-timeout-ms: ${NEMC_REQUEST_TIMEOUT_MS:20000}
+    # [기능 설명] 공공데이터포털 개별 API 요청 타임아웃(밀리초, 기본 25000 = 25초)
+    request-timeout-ms: ${NEMC_REQUEST_TIMEOUT_MS:25000}
 
     # [기능 설명] 서버 기동 즉시 사전 로딩(Cache Pre-warming) 및 백그라운드 주기적 자동 갱신 활성화 여부
     # [수정 시 영향 및 예시]

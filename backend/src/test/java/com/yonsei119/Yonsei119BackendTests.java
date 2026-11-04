@@ -256,4 +256,28 @@ class Yonsei119BackendTests {
         assertEquals(3, dto.sections().get(1).congestion());
         assertFalse(dto.guidePrompts().isEmpty());
     }
+
+    @Test
+    @DisplayName("6. XML 비정상 응답(에러 코드 또는 빈 문자열) 시 success=false가 반환되어야 한다")
+    void testXmlParsingDetectsFailureResponses() {
+        NmcOpenApiClient.ParsedXmlPage blankParsed = nmcOpenApiClient.parseXmlResponse(
+                "", "getEmrrmSrsillDissMsgInqire"
+        );
+        assertFalse(blankParsed.success());
+
+        String errorXml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <response>
+                  <header>
+                    <resultCode>99</resultCode>
+                    <resultMsg>DEADLINE_EXPIRED_ERROR</resultMsg>
+                  </header>
+                </response>
+                """;
+        NmcOpenApiClient.ParsedXmlPage errorParsed = nmcOpenApiClient.parseXmlResponse(
+                errorXml, "getSrsillDissAceptncPosblInfoInqire"
+        );
+        assertFalse(errorParsed.success());
+        assertTrue(errorParsed.items().isEmpty());
+    }
 }
