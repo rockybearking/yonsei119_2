@@ -258,29 +258,12 @@ public class NaverDirectionsService {
             }
 
             JsonNode sectionNode = firstRoute.path("section");
-            List<DirectionsResponseDto.RouteSectionDto> sections = new ArrayList<>();
-            if (sectionNode.isArray()) {
-                for (JsonNode sec : sectionNode) {
-                    int pointIndex = sec.path("pointIndex").asInt(0);
-                    int pointCount = sec.path("pointCount").asInt(0);
-                    int secDistance = sec.path("distance").asInt(0);
-                    String secName = sec.path("name").asString("").trim();
-                    int congestion = sec.path("congestion").asInt(0);
-                    int speed = sec.path("speed").asInt(0);
-                    if (pointCount > 0 && pointIndex >= 0) {
-                        sections.add(new DirectionsResponseDto.RouteSectionDto(
-                                pointIndex,
-                                pointCount,
-                                secDistance,
-                                secName,
-                                congestion,
-                                speed
-                        ));
-                    }
-                }
-            }
-
             JsonNode guideNode = firstRoute.path("guide");
+
+            List<DirectionsResponseDto.RouteSectionDto> sections = buildDetailedSections(
+                    sectionNode, guideNode
+            );
+
             List<String> guidePrompts = new ArrayList<>();
             if (guideNode.isArray()) {
                 for (JsonNode step : guideNode) {
@@ -360,6 +343,199 @@ public class NaverDirectionsService {
         }
         String lower = option.trim().toLowerCase(Locale.ROOT);
         return OPTION_LABELS.containsKey(lower) ? lower : "trafast";
+    }
+
+    /**
+     * [메서드 역할]
+     * 네이버 Directions API의 `section`(대표 도로 3개 요약)과 `guide`(전 구간 세부 분기점별 거리·실시간 소요시간)를
+     * 결합하여 출발지(0번 좌표)부터 목적지(마지막 좌표)까지 누락 없는 고정밀 실시간 혼잡도 구간 리스트를 생성합니다.
+     * <p>
+     * [개선 배경]
+     * - 네이버 API의 `section` 배열은 전체 경로 중 거리가 가장 긴 대표 도로 3개만 평균값으로 내려주므로,
+     *   지방 -> 서울 대학병원 경로 조회 시 고속도로 3개만 표시되고 서울 시내 진입 후 정체 구간이 통째로 누락되거나,
+     *   시내 주행 시 출발·도착 부근의 병목 정체 구간이 빠지는 한계가 있습니다.
+     * - 반면 `guide` 배열은 모든 교차로·고가차도·지하차도 구간마다 정확한 `pointIndex`, `distance`(m),
+     *   `duration`(실시간 소요시간 ms)을 포함하므로, 구간별 실제 주행 속도(km/h)를 역산하여
+     *   일반도로(정체 16km/h 미만, 서행 30km/h 미만) 및 고속화도로(정체 40km/h 미만, 서행 70km/h 미만) 기준의
+     *   실시간 혼잡도를 네이버 지도 앱 수준으로 정밀하게 복원합니다.
+     */
+    private static List<DirectionsResponseDto.RouteSectionDto> buildDetailedSections(
+            JsonNode sectionNode,
+            JsonNode guideNode
+    ) {
+        List<DirectionsResponseDto.RouteSectionDto> rawSections = new ArrayList<>();
+        if (sectionNode != null && sectionNode.isArray()) {
+            for (JsonNode sec : sectionNode) {
+                int pointIndex = sec.path("pointIndex").asInt(0);
+                int pointCount = sec.path("pointCount").asInt(0);
+                int secDistance = sec.path("distance").asInt(0);
+                String secName = sec.path("name").asString("").trim();
+                int congestion = sec.path("congestion").asInt(0);
+                int speed = sec.path("speed").asInt(0);
+                if (pointCount > 0 && pointIndex >= 0) {
+                    rawSections.add(new DirectionsResponseDto.RouteSectionDto(
+                            pointIndex, pointCount, secDistance, secName, congestion, speed
+                    ));
+                }
+            }
+        }
+
+        List<DirectionsResponseDto.RouteSectionDto> detailed = new ArrayList<>();
+        boolean hasValidGuideTiming = false;
+
+        if (guideNode != null && guideNode.isArray()) {
+            int prevIdx = 0;
+            for (JsonNode g : guideNode) {
+                int toIdx = g.path("pointIndex").asInt(-1);
+                int distMeters = g.path("distance").asInt(0);
+                long durMs = g.path("duration").asLong(0L);
+                int guideType = g.path("type").asInt(0);
+                String instructions = g.path("instructions").asString("").trim();
+
+                if (toIdx > prevIdx && distMeters > 0 && durMs > 0) {
+                    hasValidGuideTiming = true;
+                    int pointCount = toIdx - prevIdx;
+                    double speedExact = (distMeters / 1000.0) / (durMs / 3_600_000.0);
+                    int speedKmh = Math.max(1, (int) Math.round(speedExact));
+
+                    int midIdx = prevIdx + (pointCount / 2);
+                    DirectionsResponseDto.RouteSectionDto matchedSec = findOverlappingSection(rawSections, midIdx);
+                    String secRoadName = matchedSec != null ? matchedSec.name() : "";
+
+                    boolean expressway = isExpresswaySegment(secRoadName, instructions, guideType, speedKmh);
+                    int congestion = classifyCongestionBySpeed(speedKmh, expressway);
+
+                    if (matchedSec != null && matchedSec.congestion() > congestion && speedKmh < 35) {
+                        congestion = matchedSec.congestion();
+                    }
+
+                    String label = resolveSegmentLabel(secRoadName, instructions);
+                    detailed.add(new DirectionsResponseDto.RouteSectionDto(
+                            prevIdx,
+                            pointCount,
+                            distMeters,
+                            label,
+                            congestion,
+                            speedKmh
+                    ));
+                    prevIdx = toIdx;
+                } else if (toIdx > prevIdx) {
+                    prevIdx = toIdx;
+                }
+            }
+        }
+
+        if (!hasValidGuideTiming) {
+            return rawSections;
+        }
+
+        // 원본 section 배열에 명시된 서행(2)·정체(3) 구간도 함께 보존하여 누락 방지
+        for (DirectionsResponseDto.RouteSectionDto raw : rawSections) {
+            if (raw.congestion() >= 2) {
+                detailed.add(raw);
+            }
+        }
+
+        return detailed;
+    }
+
+    private static DirectionsResponseDto.RouteSectionDto findOverlappingSection(
+            List<DirectionsResponseDto.RouteSectionDto> rawSections,
+            int targetIdx
+    ) {
+        for (DirectionsResponseDto.RouteSectionDto sec : rawSections) {
+            int start = sec.pointIndex();
+            int end = start + sec.pointCount();
+            if (targetIdx >= start && targetIdx <= end) {
+                return sec;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isExpresswaySegment(
+            String sectionName,
+            String instructions,
+            int guideType,
+            int speedKmh
+    ) {
+        if (speedKmh >= 68) {
+            return true;
+        }
+        if (guideType >= 50 && guideType <= 53) {
+            return true;
+        }
+        String combined = (sectionName + " " + instructions);
+        return combined.contains("고속도로")
+                || combined.contains("순환선")
+                || combined.contains("고속화")
+                || combined.contains("올림픽대로")
+                || combined.contains("강변북로")
+                || combined.contains("동부간선")
+                || combined.contains("서부간선")
+                || combined.contains("북부간선")
+                || combined.contains("내부순환")
+                || combined.contains("분당수서")
+                || combined.contains("톨게이트")
+                || combined.contains("분기점");
+    }
+
+    private static int classifyCongestionBySpeed(int speedKmh, boolean expressway) {
+        if (expressway) {
+            if (speedKmh < 40) {
+                return 3; // 고속도로/도시고속도로 정체
+            }
+            if (speedKmh < 70) {
+                return 2; // 고속도로/도시고속도로 서행
+            }
+            return 1;     // 고속도로/도시고속도로 원활
+        }
+        if (speedKmh < 16) {
+            return 3;     // 일반 시내도로 정체
+        }
+        if (speedKmh < 30) {
+            return 2;     // 일반 시내도로 서행
+        }
+        return 1;         // 일반 시내도로 원활
+    }
+
+    private static String resolveSegmentLabel(String sectionName, String instructions) {
+        String fromIdxName = "";
+        int fromPos = instructions.indexOf("에서 ");
+        if (fromPos > 0) {
+            fromIdxName = instructions.substring(0, fromPos).trim();
+        }
+
+        String quotedName = "";
+        int q1 = instructions.indexOf('\'');
+        int q2 = q1 >= 0 ? instructions.indexOf('\'', q1 + 1) : -1;
+        if (q1 >= 0 && q2 > q1 + 1) {
+            quotedName = instructions.substring(q1 + 1, q2).trim();
+            int commaIdx = quotedName.indexOf(',');
+            if (commaIdx > 0) {
+                quotedName = quotedName.substring(0, commaIdx).trim();
+            }
+        }
+
+        if (!sectionName.isEmpty()) {
+            if (!fromIdxName.isEmpty() && !fromIdxName.equals(sectionName)) {
+                return sectionName + "·" + fromIdxName;
+            }
+            return sectionName;
+        }
+        if (!fromIdxName.isEmpty() && !quotedName.isEmpty() && !quotedName.startsWith(fromIdxName)) {
+            return fromIdxName + "→" + quotedName;
+        }
+        if (!fromIdxName.isEmpty()) {
+            return fromIdxName;
+        }
+        if (!quotedName.isEmpty()) {
+            return quotedName;
+        }
+        if (instructions.contains("목적지")) {
+            return "병원 진입 구간";
+        }
+        return "주행 구간";
     }
 
     private static DirectionsResponseDto createErrorResponse(

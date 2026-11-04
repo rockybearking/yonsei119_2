@@ -1654,12 +1654,13 @@ function drawRouteOnMap(hospital, data) {
         zIndex: 95
     }));
 
-    // 3. 구간별 실시간 혼잡도(data.sections: 서행 2 / 정체 3) 컬러 폴리라인 오버레이
+    // 3. 구간별 실시간 혼잡도(data.sections: 서행 2 -> 정체 3 순서로 레이어링하여 정체 빨간색이 최상단에 표시되도록 함)
     if (Array.isArray(data.sections) && data.sections.length > 0) {
-        for (const sec of data.sections) {
-            if (sec.congestion !== 2 && sec.congestion !== 3) {
-                continue;
-            }
+        const congestedSections = data.sections
+            .filter(sec => sec.congestion === 2 || sec.congestion === 3)
+            .sort((a, b) => a.congestion - b.congestion);
+
+        for (const sec of congestedSections) {
             const startIdx = Math.max(0, Number(sec.pointIndex) || 0);
             const count = Math.max(0, Number(sec.pointCount) || 0);
             const endIdx = Math.min(latLngPath.length - 1, startIdx + count);
@@ -1679,7 +1680,7 @@ function drawRouteOnMap(hospital, data) {
                 path: segmentCoords,
                 strokeColor: style.outlineColor,
                 strokeWeight: 9,
-                strokeOpacity: 0.6,
+                strokeOpacity: 0.65,
                 strokeLineCap: 'round',
                 strokeLineJoin: 'round',
                 zIndex: style.zIndex - 1
@@ -1848,7 +1849,23 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
 
         if (Array.isArray(data.sections) && data.sections.length > 0) {
             const chipWrap = node('div', 'directions-section-chips');
-            for (const sec of data.sections) {
+            const seenKeys = new Set();
+            // 정체(3)·서행(2) 구간은 모두 우선 포함하고, 원활(1) 구간은 주요 도로 위주로 선별 후 주행 순서대로 정렬
+            const prioritized = [...data.sections]
+                .filter(sec => {
+                    const key = `${sec.name}|${sec.congestion}`;
+                    if (seenKeys.has(key)) {
+                        return false;
+                    }
+                    seenKeys.add(key);
+                    return sec.congestion >= 2 || (sec.distance >= 1000 && sec.name !== '주행 구간');
+                })
+                .sort((a, b) => (b.congestion - a.congestion) || (b.distance - a.distance))
+                .slice(0, 12)
+                .sort((a, b) => a.pointIndex - b.pointIndex);
+
+            const displayList = prioritized.length > 0 ? prioritized : data.sections.slice(0, 8);
+            for (const sec of displayList) {
                 const style = getCongestionStyle(sec.congestion);
                 const roadName = sec.name || '주요 구간';
                 const speedText = sec.speed > 0 ? ` ${sec.speed}km/h` : '';
