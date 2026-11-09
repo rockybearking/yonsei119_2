@@ -1,28 +1,53 @@
 /* ==========================================================================
-   전국 응급의료기관 실시간 정보 관제 시스템 스타일시트 (style.css)
-   
+   [파일 역할]
+   연세 119 응급실 정보 시스템 — 전체 UI/UX 테마, GPU 합성 최적화, 반응형 스타일시트 (frontend/style.css)
+
+   [코드의 경로성 — 이 파일은 어디서 불리고 어떤 파일과 맞물려 동작하는가?]
+   1. [누가 로드하는가 (Incoming)]
+      - `frontend/index.html`의 `<link rel="stylesheet" href="style.css">`에서 로드됩니다.
+      - 서버 서빙은 `backend/src/main/java/com/yonsei119/config/WebConfig.java`가 담당합니다.
+   2. [어느 파일의 상태 변화에 반응하는가 (JS ↔ CSS 연동)]
+      - `frontend/app.js`의 `applyTheme()` → `<html data-theme="dark|light">`, `<body class="dark-mode">` 토글
+      - `frontend/app.js`의 `createNaverDomOverlay()` → `.hospital-card`의 `style.translate` GPU 좌표 이동
+      - `frontend/app.js`의 `syncResponsiveSheetLayout()` → `.touch-device`, `.sheet.open` 3단계 상세창 전환
+      - `frontend/app.js`의 `syncMobileMenuPlacement()` → 640px 이하에서 `#map-actions`를 `.mobile-menu-drawer`로 이동
+
+   [자주 하는 디자인 수정 예시]
+   - 예시 1) 병원 마커 카드 크기를 조금 더 넓게(168px → 184px) 키우고 싶을 때:
+       1단계: 아래 `.hospital-card`의 `width: 168px;`를 `width: 184px;`로 수정합니다.
+       2단계: `frontend/app.js` 상단의 `CARD_WIDTH = 168` 상수도 똑같이 `184`로 맞춰주면 겹침 클러스터링 격자가 자동 연동됩니다!
+   - 예시 2) 다크 모드 배경색을 더 진한 순수 검정 계열로 바꾸고 싶을 때:
+       `body.dark-mode` 및 `body.dark-mode .sheet`의 `background: #0b1120;`을 `#050811;`로 변경하세요.
+
    [목차]
-   1. :root 디자인 토큰 및 전역 리셋 (Design Tokens & Global Resets)
-   2. 지도 뷰포트 레이아웃 (#map)
-   3. 상단 관제 헤더 패널 (.top-panel)
-   4. 검색 및 반경 필터 툴바 (.search-panel, .map-actions, .radius-popover)
-   5. 모바일 반응형 바텀시트 (.sheet, .sheet-drag-handle, .contact-actions)
+   1. :root 디자인 토큰, 다크/라이트 네이티브 color-scheme 및 전역 리셋
+   2. 지도 뷰포트 레이아웃 (#map — 100dvh 모바일 주소창 대응)
+   3. 검색·필터·반경 플로팅 패널 (.search-panel, .map-actions, .radius-popover)
+   4. GPU 합성 최적화 병원 지도 카드 (.hospital-card — contain & translate)
+   5. 3단계 반응형 상세 시트 (.sheet — 중앙 모달 / 우측 슬라이더 / 모바일 바텀시트) 및 지연 렌더링 (.detail-section-deferred)
    6. E-Gen 종합 현황판 및 병상·장비·질환 매트릭스 그리드 (.egen-table-card, .egen-cell)
    7. 전광판 텍스트 애니메이션 (.is-marquee, @keyframes egen-ticker)
-   8. 상태 뱃지 시스템 (.egen-badge-pill-*, .type-badge)
-   9. 다이얼로그 모달 (.cluster-dialog, .notice-dialog)
-   10. 개발자 디버그 모드 (.developer-mode, .raw-details)
-   11. 모바일 및 터치 디바이스 반응형 미디어 쿼리 (@media, .touch-device)
+   8. 다이얼로그 모달 (.cluster-dialog, .notice-dialog)
+   9. 네이버 지도 v3 확장 UI (상단 활성 경로 배너, 모바일 ☰ 메뉴, 역지오코딩·실도로 ETA 순위, 다크 모드, 아이폰/안드로이드 초소형 반응형)
    ========================================================================== */
 
 :root {
-    color-scheme: light;
+    /*
+     * [Modern Web 최적화 — 네이티브 테마 자동 대응 (dark-mode / dark-mode-toggle 표준)]
+     * 기본 루트 선언은 반드시 `light dark` 양쪽 지원으로 유지하고,
+     * 아래 `<meta name="color-scheme">` 및 `data-theme` 선택자로 현재 활성 테마를 결정합니다.
+     */
+    color-scheme: light dark;
     
-    /* 타이포그래피 */
+    /* 타이포그래피 (`index.html`에서 비차단 로드되는 나눔스퀘어네오 우선 적용, 로드 전에는 시스템 고딕 즉시 표시) */
     --font-ui: "NanumSquareNeo", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
     --font-bold: "NanumSquareNeoBold", "NanumSquareNeo", sans-serif;
     
-    /* 레이아웃 & 간격 토큰 */
+    /*
+     * [레이아웃 & 여백 디자인 토큰]
+     * - `--edge`: 화면 가장자리와 플로팅 패널 사이의 기본 여백 (데스크톱 14px, 모바일에서는 12px로 자동 축소)
+     *   예시(변경 전): --edge: 14px;  ->  예시(변경 후, 여백을 넓히려면): --edge: 20px;
+     */
     --edge: 14px;
     --panel-padding: 12px;
     --action-size: 48px;
@@ -32,13 +57,13 @@
     --ticker-duration: 8s;
     --ticker-diff: 40px;
     
-    /* 의료 대시보드 테마 컬러 토큰 */
+    /* 의료 대시보드 라이트 모드 기본 컬러 토큰 */
     --primary-blue: #0284c7;
     --primary-dark: #0f172a;
     --text-primary: #182438;
     --text-secondary: #53677e;
     --bg-page: #f6f8fc;
-    --bg-panel: rgba(255, 255, 255, 0.96);
+    --bg-panel: rgba(255, 255, 255, 0.98);
     --border-subtle: #dce5f0;
     --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.05);
     
@@ -47,6 +72,19 @@
     text-size-adjust: 100%;
     color: var(--text-primary);
     background: var(--bg-page);
+}
+
+/* `<head>`의 `<meta name="color-scheme">` 및 `<html data-theme>`와 연동하여 첫 프레임 스크롤바/캔버스 FOUC 방지 */
+:root:has(> head > meta[name="color-scheme"][content="dark"]),
+html[data-theme="dark"] {
+    color-scheme: dark;
+    background: #0b1120;
+}
+
+:root:has(> head > meta[name="color-scheme"][content="light"]),
+html[data-theme="light"] {
+    color-scheme: light;
+    background: #f6f8fc;
 }
 
 * {
@@ -60,6 +98,17 @@ body {
     margin: 0;
     overflow: hidden;
     overscroll-behavior: none;
+}
+
+/*
+ * [아이폰 Safari & 안드로이드 Chrome 주소창 동적 높이 대응 (`100dvh`)]
+ * 모바일 브라우저 상/하단 툴바가 나타나거나 숨겨질 때 지도나 하단 패널이 잘리지 않도록 동적 뷰포트 높이를 적용합니다.
+ */
+@supports (height: 100dvh) {
+    html,
+    body {
+        height: 100dvh;
+    }
 }
 
 button,
@@ -98,6 +147,10 @@ summary:focus-visible {
     border: 0;
 }
 
+/*
+ * [메인 지도 컨테이너 (`index.html`의 `<main id="map">`, `app.js:mountNaverMap()`)]
+ * 화면 전체(`inset: 0`)를 빈틈없이 채우며 `z-index: 0`으로 모든 플로팅 패널 아래에 깔립니다.
+ */
 #map {
     position: fixed;
     inset: 0;
@@ -107,17 +160,27 @@ summary:focus-visible {
     background: #eaf0f5;
 }
 
-/* 지도 위 패널 */
+@supports (height: 100dvh) {
+    #map {
+        height: 100dvh;
+    }
+}
 
+/*
+ * [지도 위 검색·필터 플로팅 패널 (`index.html`의 `#search-panel`)]
+ * - [성능 최적화 Phase 1]: 초당 60프레임으로 다시 그려지는 WebGL 지도 `<canvas>` 위에서
+ *   `backdrop-filter: blur(...)`를 사용하면 매 프레임 GPU 프레임버퍼 복사·가우시안 블러 연산이 발생해
+ *   모바일/노트북 발열과 프레임 드랍을 유발하므로, 선명한 고불투명도(`0.98`) 표면으로 대체했습니다!
+ * - [수정 예시] 만약 반투명 유리 블러 효과를 다시 켜고 싶다면 `backdrop-filter: blur(10px);`를 추가할 수 있으나,
+ *   저사양 모바일 지도 드래그 프레임 방어를 위해 현재의 고불투명도 단색 표면을 권장합니다.
+ */
 .search-panel {
     position: fixed;
     z-index: 10;
-    background: rgba(255, 255, 255, 0.96);
+    background: rgba(255, 255, 255, 0.98);
     border: 1px solid #dce5f0;
     border-radius: 18px;
     box-shadow: 0 12px 36px rgba(21, 44, 76, 0.15);
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
 }
 
 .panel-heading {
@@ -484,8 +547,19 @@ summary:focus-visible {
     color: #64758a;
 }
 
-/* 병원 지도 카드 */
-
+/*
+ * ==========================================================================
+ * [병원 지도 마커 카드 (.hospital-card)]
+ * - [연결 경로] `frontend/app.js`의 `createMarkerContent()`에서 생성되고,
+ *   `createNaverDomOverlay()`의 `draw()`가 지도 이동 시마다 `style.translate` 좌표를 갱신합니다.
+ * - [Modern Web 성능 최적화 Phase 1]
+ *   1) `contain: layout style`: 카드 내부의 병상 텍스트/배지가 바뀔 때 브라우저가 전체 페이지를
+ *      다시 계산(Global Reflow)하지 않고 이 카드 안에서만 레이아웃을 끝내도록 격리합니다.
+ *   2) `translate: 0px`: 개별 변환 속성(`style.translate`)의 항등 변환(Identity Transform)을 기본 선언하여
+ *      기존 `style.transform = translate(-50%, -100%)` 앵커 정렬과 충돌 없이 GPU 합성 스레드에서 이동시킵니다.
+ *   3) 주의: 수십~수백 개의 카드에 전역 `will-change: transform`을 걸면 모바일 GPU VRAM이 고갈되므로 절대 걸지 않습니다!
+ * ==========================================================================
+ */
 .hospital-card {
     font-family: var(--font-ui), sans-serif;
     display: flex;
@@ -506,6 +580,8 @@ summary:focus-visible {
     -webkit-user-select: none;
     touch-action: none;
     cursor: grab;
+    contain: layout style;
+    translate: 0;
 }
 
 .hospital-card:active {
@@ -623,6 +699,8 @@ summary:focus-visible {
     display: flex;
     flex-direction: column;
     width: min(1060px, 100vw);
+    max-width: 100%;
+    overflow-x: hidden;
     background: #f2f6fc;
     box-shadow: -12px 0 42px rgba(16, 35, 59, 0.2);
     transform: translateX(102%);
@@ -666,6 +744,7 @@ summary:focus-visible {
 }
 
 .sheet-header > div {
+    flex: 1 1 auto;
     min-width: 0;
 }
 
@@ -686,11 +765,18 @@ summary:focus-visible {
     line-height: 1.4;
 }
 
+/*
+ * [기능 설명] 병원 상세 시트 제목(#sheet-title)
+ * - `word-break: keep-all`: 띄어쓰기가 있는 한글 단어는 어절 단위로 깔끔하게 줄바꿈
+ * - `overflow-wrap: anywhere`: 띄어쓰기 없이 20자 이상 이어지는 초장문 병원명
+ *   (예: '학교법인가톨릭학원가톨릭대학교서울성모병원')이 모바일 화면 우측 밖으로 삐져나가는 현상 방지!
+ */
 h1 {
     margin: 9px 0 7px;
     font-size: clamp(19px, 4vw, 23px);
     line-height: 1.3;
     word-break: keep-all;
+    overflow-wrap: anywhere;
 }
 
 .muted {
@@ -818,7 +904,7 @@ h1 {
     background: #2356c4;
 }
 
-/* 상세 항목 */
+/* 상세 항목 (`index.html`의 `#sheet` 내부 각 섹션 카드) */
 
 .detail-section {
     margin-top: 16px;
@@ -831,6 +917,23 @@ h1 {
     border-radius: 18px;
     background: #fff;
     box-shadow: 0 5px 20px rgb(26 57 99 / 5%);
+}
+
+/*
+ * [Modern Web 성능 최적화 Phase 4 — 스크롤 하단 무거운 섹션 지연 렌더링]
+ * - 대상: `index.html`의 `#section-inpatient-beds`, `#section-equipment`, `#section-severe`, `#developer-mode`
+ * - 원리: 시트를 처음 열 때 화면 밖에 있는 수백 개의 병상/중증질환 셀 레이아웃 계산을 건너뛰어
+ *   병원 클릭 직후 시트가 열리는 속도(INP)를 극대화하고, `contain-intrinsic-size`로 스크롤바 점프를 방지합니다!
+ */
+.detail-section-deferred {
+    content-visibility: auto;
+    contain-intrinsic-size: auto none auto 260px;
+}
+
+@supports not (content-visibility: auto) {
+    .detail-section-deferred {
+        contain: layout style paint;
+    }
 }
 
 .section-heading {
@@ -1844,28 +1947,39 @@ h1 {
     }
 }
 
-/* 대화상자 */
+/* 대화상자 (`index.html`의 `#cluster-dialog`, `#notice-dialog`) */
 
 dialog {
     color: #233448;
 }
 
+/* WebGL 지도 캔버스 위에서의 GPU 부하 방지를 위해 backdrop-filter 블러 대신 깔끔한 반투명 딤 사용 */
 dialog::backdrop {
-    background: #10294388;
-    -webkit-backdrop-filter: blur(7px);
-    backdrop-filter: blur(7px);
+    background: rgba(10, 22, 40, 0.62);
 }
 
 .cluster-dialog {
-    width: min(480px, calc(100vw - 32px));
+    width: min(480px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
     max-height: 85vh;
-    padding: 20px;
+    padding: 18px;
     border: 1px solid #e3eaf2;
     border-radius: 20px;
     box-shadow: 0 20px 70px #10294340;
 }
 
+/*
+ * [모바일 반응형 개선]
+ * 클러스터에 10개 이상의 병원이 묶여 있어도 상단 제목과 하단 '이 구역 확대' 버튼이 잘리지 않도록,
+ * 열린 상태(`[open]`)에서 내부 `.cluster-list`만 부드럽게 스크롤되게 구성합니다.
+ */
+.cluster-dialog[open] {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
 .dialog-heading {
+    flex: 0 0 auto;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -1880,9 +1994,22 @@ dialog::backdrop {
 }
 
 .cluster-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: min(56vh, 420px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     display: grid;
     gap: 9px;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
+    padding-right: 2px;
+}
+
+@supports (max-height: 56dvh) {
+    .cluster-list {
+        max-height: min(56dvh, 420px);
+    }
 }
 
 .cluster-item {
@@ -2191,12 +2318,17 @@ h3 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    #search-content {
-        max-height: 40dvh;
-        overflow: auto;
+    /* 가로모드(낮은 높이)에서 `#search-results` 절대위치 팝업이 잘리지 않도록 overflow는 내부 `.eta-rank-box`에서만 제어 */
+    .eta-rank-box {
+        max-height: min(22dvh, 110px);
     }
 }
 
+/*
+ * [접근성 & 저전력 배려 (`motion` 가이드 준수)]
+ * OS 설정에서 '동작 줄이기(Reduce Motion)'를 켠 사용자를 위해 불필요한 무한 회전·파동·마키 애니메이션을 정지합니다.
+ * (`animation-duration: 0.01ms` 전역 강제 대신 개별 컴포넌트 애니메이션을 깔끔하게 해제합니다.)
+ */
 @media (prefers-reduced-motion: reduce) {
     .sheet {
         transition: none;
@@ -2206,8 +2338,13 @@ h3 {
     .is-loading .refresh-icon,
     .location-marker::before,
     .location-marker::after,
-    .location-dot {
+    .location-dot,
+    .is-marquee .marquee-inner {
         animation: none;
+    }
+
+    .is-marquee .marquee-inner {
+        transform: none;
     }
 
     .location-marker::before {
@@ -2348,15 +2485,23 @@ h3 {
         width: max-content;
     }
 
-    .filters {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* 폭이 좁은 가로 화면에서만 2열로 줄이고, 아이폰/안드로이드 일반 가로모드(>=560px)에서는 4열 1줄을 유지해 세로 높이를 아낍니다! */
+    @media (max-width: 559px) {
+        .filters {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
 }
 
+/*
+ * [아이폰(iOS Safari/WebView) & 안드로이드 입력창 자동 화면 확대(Auto-Zoom) 원천 방지 (`forms` 표준)]
+ * 모바일 터치 환경에서 `<input>` 및 `<select>` 글자 크기가 `16px` 미만이면 포커스 시 화면이 강제 줌인되어 레이아웃이 흔들립니다.
+ */
 @media (max-width: 700px), (any-pointer: coarse) {
     #keyword,
     #keyword::placeholder,
-    #radius {
+    #radius,
+    .directions-select {
         font-size: 16px;
     }
 }
@@ -2433,25 +2578,23 @@ h3 {
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: calc(100vw - 28px);
+    max-width: calc(100vw - 28px - env(safe-area-inset-left) - env(safe-area-inset-right));
     padding: 8px 12px;
     border: 1px solid #b6e3c4;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.97);
+    background: rgba(255, 255, 255, 0.98);
     box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
 }
 
 .active-route-summary {
     display: flex;
     align-items: center;
     gap: 7px;
+    flex: 1 1 auto;
     min-width: 0;
     font-size: 12px;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 .active-route-api {
@@ -2464,31 +2607,69 @@ h3 {
     font-family: var(--font-bold), sans-serif;
 }
 
-.active-route-summary strong {
+.active-route-name {
+    min-width: 0;
+    flex: 1 1 auto;
     color: #0f172a;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.active-route-summary span:last-child {
+.active-route-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.active-route-meta {
+    flex-shrink: 0;
+    white-space: nowrap;
     color: #0f766e;
+    font-size: 12px;
     font-family: var(--font-bold), sans-serif;
+}
+
+.active-route-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.active-route-clear,
+.active-route-reset {
+    flex-shrink: 0;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-family: var(--font-bold), sans-serif;
+    line-height: 1.25;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .active-route-clear {
-    flex-shrink: 0;
-    padding: 4px 9px;
     border: 1px solid #cbd5e1;
-    border-radius: 999px;
     background: #f8fafc;
     color: #334155;
-    font-size: 11px;
-    font-family: var(--font-bold), sans-serif;
-    cursor: pointer;
 }
 
 .active-route-clear:hover {
     background: #e2e8f0;
+}
+
+.active-route-reset {
+    border: 1px solid #fecdd3;
+    background: #fff1f2;
+    color: #be123c;
+}
+
+.active-route-reset:hover {
+    border-color: #fda4af;
+    background: #ffe4e6;
 }
 
 /*
@@ -2912,9 +3093,7 @@ body.dark-mode .directions-section-chip.congestion-jam {
 /* [대화면 모니터 모드] 중앙 둥근모서리 사각 모달 카드 */
 @media (min-width: 1200px) and (min-height: 680px) {
     body:not(.touch-device) .sheet-dim {
-        background: rgba(12, 26, 46, 0.52);
-        -webkit-backdrop-filter: blur(4px);
-        backdrop-filter: blur(4px);
+        background: rgba(12, 26, 46, 0.56);
     }
 
     body:not(.touch-device) .sheet {
@@ -3008,11 +3187,11 @@ body.dark-mode #map {
     background: #0b1120;
 }
 
-/* 1. 하단 검색 패널(.search-panel) */
+/* 1. 하단 검색 패널(.search-panel) — WebGL 지도 위 고불투명도 다크 표면 */
 body.dark-mode .search-panel,
 body.dark-mode .radius-popover,
 body.dark-mode .search-results {
-    background: rgba(15, 23, 42, 0.92);
+    background: rgba(15, 23, 42, 0.96);
     border-color: #334155;
     box-shadow: 0 16px 40px rgba(2, 6, 23, 0.65);
     color: #e2e8f0;
@@ -3166,11 +3345,11 @@ body.dark-mode .active-route-banner {
     box-shadow: 0 12px 32px rgba(2, 6, 23, 0.7);
 }
 
-body.dark-mode .active-route-summary strong {
+body.dark-mode .active-route-name {
     color: #f1f5f9;
 }
 
-body.dark-mode .active-route-summary span:last-child {
+body.dark-mode .active-route-meta {
     color: #34d399;
 }
 
@@ -3182,6 +3361,18 @@ body.dark-mode .active-route-clear {
 
 body.dark-mode .active-route-clear:hover {
     background: #334155;
+}
+
+body.dark-mode .active-route-reset {
+    background: rgba(159, 18, 57, 0.28);
+    border-color: rgba(251, 113, 133, 0.42);
+    color: #fda4af;
+}
+
+body.dark-mode .active-route-reset:hover {
+    background: rgba(190, 18, 60, 0.42);
+    border-color: rgba(251, 113, 133, 0.65);
+    color: #ffe4e6;
 }
 
 /* 5. 병원 상세 정보창 (#sheet — 중앙 모달 / 우측 슬라이더 / 모바일 바텀시트 공통) */
@@ -3230,11 +3421,11 @@ body.dark-mode .close-button:hover {
     color: #ffffff;
 }
 
-@media (min-width: 641px) and (hover: hover) and (pointer: fine) {
-    body.dark-mode .sheet-scroll {
-        scrollbar-color: #475569 transparent;
-    }
+body.dark-mode .sheet-scroll {
+    scrollbar-color: #475569 transparent;
+}
 
+@media (min-width: 641px) and (hover: hover) and (pointer: fine) {
     body.dark-mode .sheet-scroll::-webkit-scrollbar-thumb {
         background-color: #475569;
     }
@@ -3553,7 +3744,7 @@ body.dark-mode .notice-copy strong {
 /* ==========================================================================
    9. 네이버 지도 v3 & NCP Maps API 확장 기능 스타일
       (실시간 교통소통 레이어, 모바일 좌측 상단 ☰ 메뉴, 역지오코딩 주소, 실도로 ETA 랭킹,
-       4대 다중 경로 옵션 비교 카드, 경유지 마커, 병원 주변 거리뷰/파노라마)
+       4대 다중 경로 옵션 비교 카드, 경유지 마커)
    ========================================================================== */
 
 /* 9-1. 상단 컨트롤 바 — 실시간 교통소통 토글 & 모바일 좌측 상단 ☰ 메뉴 */
@@ -3576,14 +3767,12 @@ body.dark-mode .notice-copy strong {
     padding: 0;
     border: 1px solid #d6e2ef;
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.96);
+    background: rgba(255, 255, 255, 0.98);
     color: #17579e;
     font-size: 20px;
     font-weight: 800;
     line-height: 1;
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
@@ -3599,11 +3788,9 @@ body.dark-mode .notice-copy strong {
     padding: 10px 12px;
     border: 1px solid #dce5f0;
     border-radius: 16px;
-    background: rgba(255, 255, 255, 0.97);
+    background: rgba(255, 255, 255, 0.98);
     box-shadow: 0 14px 36px rgba(15, 23, 42, 0.22);
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
-    max-width: calc(100vw - 28px);
+    max-width: calc(100vw - 2 * var(--edge) - env(safe-area-inset-left) - env(safe-area-inset-right));
 }
 
 /* 9-2. 하단 검색 패널 — 현재 출발 기준점 주소(Reverse Geocoding) & 최단시간(ETA) 병원 추천 바 */
@@ -3634,6 +3821,34 @@ body.dark-mode .notice-copy strong {
     color: #475569;
     font-size: 0.76rem;
     font-weight: 700;
+}
+
+.origin-info-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+}
+
+.origin-reset-btn {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 4px 8px;
+    border: 1px solid #fecdd3;
+    border-radius: 6px;
+    background: #fff1f2;
+    color: #be123c;
+    font: inherit;
+    font-size: 0.73rem;
+    font-weight: 800;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.origin-reset-btn:hover {
+    border-color: #fda4af;
+    background: #ffe4e6;
 }
 
 .eta-rank-btn {
@@ -3920,42 +4135,7 @@ body.dark-mode .notice-copy strong {
     pointer-events: none;
 }
 
-/* 9-6. 병원 주변 거리뷰 / 파노라마 (naver.maps.Panorama) */
-.panorama-section {
-    padding: 12px;
-    border: 1px solid #dce5f0;
-    border-radius: 10px;
-    background: #f8fafc;
-}
-
-.panorama-heading {
-    margin-bottom: 0;
-}
-
-.panorama-wrap {
-    margin-top: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.panorama-view {
-    width: 100%;
-    height: 260px;
-    border-radius: 8px;
-    overflow: hidden;
-    border: 1px solid #cbd5e1;
-    background: #0f172a;
-}
-
-.panorama-status {
-    margin: 0;
-    color: #64748b;
-    font-size: 0.75rem;
-    font-weight: 700;
-}
-
-/* 9-7. 다크 모드 대응 */
+/* 9-6. 다크 모드 대응 */
 body.dark-mode .traffic-toggle-btn[aria-pressed="true"] {
     background: #03c75a;
     border-color: #4ade80;
@@ -3989,6 +4169,18 @@ body.dark-mode .origin-info-row {
 
 body.dark-mode .origin-address-text {
     color: #cbd5e1;
+}
+
+body.dark-mode .origin-reset-btn {
+    background: rgba(159, 18, 57, 0.28);
+    border-color: rgba(251, 113, 133, 0.42);
+    color: #fda4af;
+}
+
+body.dark-mode .origin-reset-btn:hover {
+    background: rgba(190, 18, 60, 0.42);
+    border-color: rgba(251, 113, 133, 0.65);
+    color: #ffe4e6;
 }
 
 body.dark-mode .eta-rank-btn {
@@ -4101,16 +4293,7 @@ body.dark-mode .directions-alt-meta {
     color: #cbd5e1;
 }
 
-body.dark-mode .panorama-section {
-    background: #0f172a;
-    border: 1px solid #1e293b;
-}
-
-body.dark-mode .panorama-view {
-    border: 1px solid #334155;
-}
-
-/* 9-8. 모바일(640px 이하) 좌측 상단 ☰ 메뉴 독립 및 하단 검색 상자 깨짐 방지 */
+/* 9-7. 모바일(640px 이하) 좌측 상단 ☰ 메뉴 독립 및 하단 검색 상자 깨짐 방지 */
 @media (max-width: 640px) {
     .mobile-top-left-menu {
         position: fixed;
@@ -4199,11 +4382,17 @@ body.dark-mode .panorama-view {
     }
 
     .origin-info-row {
-        padding: 4px 8px;
+        padding: 5px 8px;
     }
 
     .origin-address-text {
         font-size: 0.72rem;
+    }
+
+    .origin-reset-btn {
+        min-height: 26px;
+        padding: 3px 7px;
+        font-size: 0.7rem;
     }
 
     .eta-rank-btn {
@@ -4211,8 +4400,19 @@ body.dark-mode .panorama-view {
         font-size: 0.71rem;
     }
 
-    .panorama-view {
-        height: 210px;
+    /* 모바일 화면(iPhone SE 등 작은 높이 포함)에서 실도로 순위 창이 상단 배너나 메뉴를 침범하지 않도록 높이 제한 */
+    .eta-rank-box {
+        max-height: min(26dvh, 180px);
+    }
+
+    /*
+     * [모바일 UI 침범 방지 핵심 규칙]
+     * 상단 활성 경로 배너(`#active-route-banner`, 2줄 높이 약 64~74px)가 떠 있을 때
+     * 좌측 상단 ☰ 메뉴 서랍(`#mobile-menu-drawer`)을 열면 두 박스가 겹치지 않도록
+     * 서랍의 상단 여백을 배너 아래쪽까지 자동으로 내려줍니다!
+     */
+    body:has(#active-route-banner:not([hidden])) .mobile-top-left-menu .mobile-menu-drawer {
+        margin-top: 32px;
     }
 
     /* 모바일 및 안드로이드/iOS WebView 환경에서 자동차 경로 탐색 컨트롤 박스 이탈 원천 차단 */
@@ -4243,7 +4443,8 @@ body.dark-mode .panorama-view {
         max-width: 100%;
         min-width: 0;
         min-height: 40px;
-        font-size: 13px;
+        font-size: 16px;
+        letter-spacing: -0.02em;
     }
 
     .directions-btn-group {
@@ -4262,7 +4463,7 @@ body.dark-mode .panorama-view {
         text-align: center;
     }
 
-    /* 모바일 상단 활성 경로 배너가 좌측 상단 ☰ 메뉴 버튼과 겹치지 않도록 우측 영역에 배치 */
+    /* 모바일 상단 활성 경로 배너가 좌측 상단 ☰ 메뉴 버튼과 겹치지 않도록 우측 영역에 2줄 반응형 배치 */
     .active-route-banner {
         left: calc(var(--edge) + env(safe-area-inset-left) + 52px);
         right: calc(var(--edge) + env(safe-area-inset-right));
@@ -4270,13 +4471,107 @@ body.dark-mode .panorama-view {
         width: auto;
         max-width: none;
         min-height: 44px;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px 11px;
+        border-radius: 18px;
+    }
+
+    .active-route-summary {
+        width: 100%;
+        gap: 6px;
+        font-size: 12px;
+    }
+
+    .active-route-footer {
+        width: 100%;
         justify-content: space-between;
-        padding: 6px 10px;
+        flex-wrap: wrap;
+        gap: 5px 8px;
+    }
+
+    .active-route-meta {
+        font-size: 11.5px;
+    }
+
+    .active-route-actions {
+        margin-left: auto;
+        gap: 4px;
+    }
+
+    .active-route-clear,
+    .active-route-reset {
+        min-height: 26px;
+        padding: 4px 8px;
+        font-size: 11px;
     }
 }
 
-/* 초소형 모바일 디스플레이(iPhone SE 320px, 갤럭시 폴드 커버 등) 대응 */
+/*
+ * [아이폰 Mini/SE (320px~390px) 및 표준 안드로이드(360px) 좁은 가로폭 최적화]
+ * 우클릭 출발지 '초기화' 버튼과 '실도로 최단시간 순위' 버튼이 동시에 뜰 때
+ * 출발지 주소 글자가 0px로 찌그러지지 않도록 주소를 윗줄 100%, 액션 버튼들을 아랫줄 우측으로 깔끔하게 줄바꿈합니다.
+ */
+@media (max-width: 390px) {
+    .origin-info-row {
+        flex-wrap: wrap;
+        gap: 5px 8px;
+    }
+
+    .origin-address-text {
+        flex: 1 1 100%;
+    }
+
+    .origin-info-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
+/* 초소형 모바일 디스플레이(iPhone SE 320px, 표준 안드로이드 360px, 갤럭시 폴드 커버 280px 등) 정밀 대응 */
 @media (max-width: 360px) {
+    .active-route-banner {
+        left: calc(var(--edge) + env(safe-area-inset-left) + 50px);
+        padding: 7px 9px;
+        gap: 5px;
+    }
+
+    body:has(#active-route-banner:not([hidden])) .mobile-top-left-menu .mobile-menu-drawer {
+        margin-top: 44px;
+    }
+
+    .active-route-summary {
+        font-size: 11.5px;
+    }
+
+    .active-route-api {
+        padding: 2px 6px;
+        font-size: 9.5px;
+    }
+
+    .active-route-meta {
+        font-size: 10.5px;
+    }
+
+    .active-route-clear,
+    .active-route-reset {
+        padding: 3px 7px;
+        font-size: 10.5px;
+    }
+
+    /* 좁은 화면에서 응급실/대표 전화번호 버튼이 3줄로 구겨지지 않도록 1열 세로 배치로 전환 */
+    .phone-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .navigation-actions a,
+    .navigation-actions button {
+        padding: 8px 6px;
+        font-size: 11.5px;
+    }
+
     .directions-alt-btn {
         padding: 8px;
     }
@@ -4290,7 +4585,22 @@ body.dark-mode .panorama-view {
     }
 }
 
-/* iOS Safari / WKWebView 전용: <select> 터치 시 화면이 강제 확대(Auto-Zoom)되는 WebKit 특성 방지 */
+/* 갤럭시 폴드 외부 커버 디스플레이(280px~310px) 초협소 폭 방어 */
+@media (max-width: 310px) {
+    .directions-alternatives {
+        grid-template-columns: 1fr;
+    }
+
+    .navigation-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .origin-info-actions {
+        flex-wrap: wrap;
+    }
+}
+
+/* iOS Safari / WKWebView 전용 미세 자간 보정 */
 @supports (-webkit-touch-callout: none) {
     @media (max-width: 700px), (any-pointer: coarse) {
         .directions-select {

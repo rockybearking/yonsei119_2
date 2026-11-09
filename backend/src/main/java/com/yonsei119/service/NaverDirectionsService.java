@@ -36,16 +36,28 @@ import java.util.stream.Stream;
  * ============================================================================
  * [클래스 역할]
  * 네이버 클라우드 플랫폼(NCP)의 **Directions 5**, **Directions 15**, **Reverse Geocoding**,
- * **Geocoding** API를 백엔드에서 안전하게 호출하고 캐싱하는 통합 위치·경로 서비스입니다.
+ * **Geocoding** API를 백엔드에서 안전하게 대신 호출(프록시)하고 인메모리 캐싱하는 **통합 위치·경로 서비스**입니다.
  * <p>
- * [담당 기능]
- * 1. **Directions 5 / 15 다중 옵션 동시 조회 (`trafast:traoptimal:traavoidtoll`)**:
- *    - 1회 API 호출로 최대 3개 주행 옵션(실시간 빠른길·실시간 최적·무료 우선 등)을 동시에 받아와
- *      옵션 비교 요약(`alternatives`)을 제공하고, 각 옵션별 경로를 모두 인메모리 캐시에 저장합니다.
- * 2. **주변 후보 병원 실도로 소요시간(ETA) 병렬 비교 (`rankHospitalsByDrivingTime`)**:
- *    - 단순 직선거리가 아닌 실제 도로 주행 소요시간 기준으로 주변 응급실을 병렬 조회·정렬합니다.
- * 3. **Reverse Geocoding (`reverseGeocode`) & Geocoding (`geocode`)**:
- *    - 좌표 -> 행정동/도로명 주소 변환 및 주소/지역명 -> 좌표 변환을 수행합니다.
+ * [파이썬 장고(Django) 비유]
+ * - 장고 프로젝트의 **{@code services/naver_maps_service.py}** 파일과 동일한 위치의 비즈니스 서비스입니다!
+ * - 왜 브라우저({@code app.js})에서 네이버 길찾기 API를 직접 안 부르고 백엔드({@code NaverDirectionsService})를 거치나요?
+ *   1) **보안**: 네이버 Directions/Geocoding REST API는 비공개 비밀키({@code X-NCP-APIGW-API-KEY} = {@code clientSecret})가 필수인데,
+ *      이를 프론트엔드 JS에 적으면 누구나 F12 개발자 도구로 키를 훔쳐 쓸 수 있기 때문입니다.
+ *   2) **CORS 차단 우회**: 네이버 Directions REST API는 브라우저 직접 호출(CORS)을 막아두었으므로 반드시 백엔드 서버가 호출해야 합니다.
+ *   3) **공용 캐싱**: 여러 사용자가 비슷한 경로/주소를 조회할 때 {@code ConcurrentHashMap} 캐시({@code routeCache}, {@code reverseGeocodeCache})로 즉시 응답합니다.
+ * <p>
+ * [코드의 경로성 (어디서 오고 어디로 가는가?)]
+ * - [설정 주입 (Config Source)] : {@code application.yml} ({@code yonsei119.naver.*}) → {@code config/Yonsei119Properties.java}
+ * - [호출 출발지 (Incoming — {@code controller/EmergencyApiController.java})] :
+ *   1) {@code GET /api/directions}      → {@link #getDrivingRoute} 호출 → {@code dto/DirectionsResponseDto.java} 반환 → {@code app.js:requestDirections()} / {@code refreshActiveRoute()}
+ *   2) {@code GET /api/directions/rank} → {@link #rankHospitalsByDrivingTime} 호출 → {@code List<HospitalEtaRankDto>} 반환 → {@code app.js:loadEtaRanking()}
+ *   3) {@code GET /api/reverse-geocode} → {@link #reverseGeocode} 호출 → {@code dto/ReverseGeocodeResponseDto.java} 반환 → {@code app.js:updateOriginAddress()}
+ *   4) {@code GET /api/geocode}         → {@link #geocode} 호출 → {@code dto/GeocodeResponseDto.java} 반환 → {@code app.js:searchAddressAndMove()}
+ * <p>
+ * [수정 시 영향 및 예시]
+ * - 실시간 교통상황이 반영되는 길찾기 캐시 유지 시간({@code ROUTE_CACHE_TTL_SECONDS}, 기본 60초)을 30초로 줄이고 싶다면:
+ *   예시(변경 전): {@code private static final long ROUTE_CACHE_TTL_SECONDS = 60L;}
+ *   예시(변경 후): {@code private static final long ROUTE_CACHE_TTL_SECONDS = 30L;}
  * ============================================================================
  */
 @Service
@@ -53,16 +65,21 @@ public class NaverDirectionsService {
 
     private static final Logger log = LoggerFactory.getLogger(NaverDirectionsService.class);
 
-    /** 동일 경로 재조회 시 캐시 유지 시간(초) */
+    /** 동일 출발·도착·옵션 경로 재조회 시 캐시 유지 시간(초, 기본 60초 — 실시간 교통 반영과 API 비용 절감의 균형점) */
     private static final long ROUTE_CACHE_TTL_SECONDS = 60L;
 
-    /** 지오코딩/리버스지오코딩 캐시 유지 시간(초) */
+    /** 지오코딩/역지오코딩 캐시 유지 시간(초, 기본 600초 = 10분 — 도로명 주소는 자주 변하지 않으므로 길게 유지) */
     private static final long GEOCODE_CACHE_TTL_SECONDS = 600L;
 
+    /** 네이버 클라우드 Reverse Geocoding(좌표 -> 주소) 공식 엔드포인트 */
     private static final String REVERSE_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-reversegeocode/v2/gc";
+    /** 네이버 클라우드 Geocoding(주소 -> 좌표) 공식 엔드포인트 */
     private static final String GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode";
 
-    /** 네이버 Directions API 지원 탐색 옵션 코드 -> 한글 표시 라벨 맵 */
+    /**
+     * 네이버 Directions API 탐색 옵션 코드 → 화면 표시 한글 라벨 매핑 사전.
+     * - [수정 예시] {@code "무료 우선"}이라는 문구를 {@code "톨게이트 무료"}로 바꾸고 싶다면 {@code "traavoidtoll", "톨게이트 무료"}로 수정하세요.
+     */
     public static final Map<String, String> OPTION_LABELS = Map.of(
             "trafast", "실시간 빠른길",
             "traoptimal", "실시간 최적",
@@ -91,13 +108,20 @@ public class NaverDirectionsService {
     }
 
     /**
-     * [메서드 역할]
-     * 출발지 위경도(`startLat`, `startLng`)와 도착 병원 위경도(`goalLat`, `goalLng`),
-     * 선택한 API 종류(`directions5` 또는 `directions15`), 경로 탐색 옵션(`trafast` 등),
-     * 선택적 경유지(`waypoints`)를 받아 네이버 자동차 경로 탐색 결과를 반환합니다.
+     * [메서드 역할 — 자동차 경로 탐색 핵심 진입점]
+     * 출발지({@code startLat}, {@code startLng})에서 목표 병원({@code goalLat}, {@code goalLng})까지의 실시간 자동차 주행 경로를 조회합니다.
      * <p>
-     * 1회 호출 시 최대 3개 옵션(`trafast:traoptimal:traavoidtoll`)을 함께 요청하여
-     * 다른 옵션으로 전환할 때 추가 네트워크 호출 없이 캐시에서 즉시 응답합니다.
+     * [코드의 경로성]
+     * - [어디서 왔는가 (Incoming)] :
+     *   1) {@code EmergencyApiController.getDirections()} ({@code GET /api/directions}) ← {@code frontend/app.js}의 {@code requestDirections()} 및 {@code refreshActiveRoute()}
+     *   2) 같은 파일 아래의 {@link #rankHospitalsByDrivingTime} 내부 병렬 ETA 계산 루프
+     * - [어디로 가는가 (Outgoing)] :
+     *   {@link #sendDirectionsHttpRequest}로 네이버 API 서버 통신 → {@link #parseDirectionsJson}으로 파싱 →
+     *   {@code dto/DirectionsResponseDto.java} 반환!
+     * <p>
+     * [중요 좌표 순서 주의사항!]
+     * - 네이버 Directions REST API 쿼리 파라미터({@code start=경도,위도})는 일반적인 {@code (위도, 경도)}와 반대인 **{@code 경도(lng),위도(lat)} 순서**입니다!
+     *   ({@code line 141}: {@code String.format(Locale.US, "%.6f,%.6f", startLng, startLat)} — 순서를 절대 바꾸지 마세요!)
      */
     public DirectionsResponseDto getDrivingRoute(
             double startLat,
@@ -290,8 +314,8 @@ public class NaverDirectionsService {
     /**
      * [메서드 역할]
      * 네이버 Directions 5 / 15 JSON 응답 본문을 파싱하여 {@link DirectionsResponseDto}로 변환합니다.
-     * 응답에 여러 탐색 옵션(`trafast`, `traoptimal`, `traavoidtoll` 등)이 함께 들어 있는 경우
-     * `alternatives` 비교 요약 리스트도 함께 생성합니다.
+     * 응답에 여러 탐색 옵션({@code trafast}, {@code traoptimal}, {@code traavoidtoll} 등)이 함께 들어 있는 경우
+     * {@code alternatives} 비교 요약 리스트도 함께 생성합니다.
      */
     public DirectionsResponseDto parseDirectionsJson(
             String jsonBody,
@@ -429,9 +453,18 @@ public class NaverDirectionsService {
     }
 
     /**
-     * [메서드 역할]
-     * 기준 좌표(`startLat`, `startLng`) 주변의 후보 병원들에 대해 네이버 Directions 5 API를 병렬 호출하여
-     * **실제 자동차 도로 주행 시간(ETA)**이 가장 짧은 순서대로 정렬한 추천 목록을 반환합니다.
+     * [메서드 역할 — 주변 후보 병원 실도로 주행시간(ETA) 병렬 비교 추천]
+     * 직선거리({@code haversineKm})로 1차 후보 병원을 추린 뒤, 각 병원까지 {@code CompletableFuture.supplyAsync}로
+     * 네이버 Directions 5 API를 **동시에 병렬 호출**하여 실제 도로 주행 시간이 가장 짧은 순서대로 순위를 매깁니다.
+     * <p>
+     * [코드의 경로성]
+     * - [어디서 왔는가 (Incoming)] : {@code EmergencyApiController.rankDirections()} ({@code GET /api/directions/rank}) ← {@code frontend/app.js:loadEtaRanking()}
+     * - [어디로 가는가 (Outgoing)] : {@code List<HospitalEtaRankDto>}({@code dto/HospitalEtaRankDto.java}) 반환 → 좌측 패널 {@code #eta-rank-box} 렌더링!
+     * <p>
+     * [수정 시 영향 및 예시]
+     * - 한 번에 비교할 최대 후보 병원 상한(기본 8개)을 10개로 늘리고 싶다면 아래 {@code safeLimit} 및 {@code .limit(...)}의 {@code 8}을 {@code 10}으로 변경하세요:
+     *   예시(변경 전): {@code int safeLimit = Math.max(1, Math.min(limit, 8));}
+     *   예시(변경 후): {@code int safeLimit = Math.max(1, Math.min(limit, 10));}
      */
     public List<HospitalEtaRankDto> rankHospitalsByDrivingTime(
             List<HospitalDto> allHospitals,
@@ -560,9 +593,15 @@ public class NaverDirectionsService {
     }
 
     /**
-     * [메서드 역할]
-     * 네이버 클라우드 플랫폼 Reverse Geocoding API (`map-reversegeocode/v2/gc`)를 호출하여
-     * 위경도 좌표를 한국어 행정동/도로명/지번 주소로 변환합니다.
+     * [메서드 역할 — 역지오코딩: 위경도 좌표 → 한국어 도로명/지번 주소 변환]
+     * <p>
+     * [코드의 경로성]
+     * - [어디서 왔는가 (Incoming)] : {@code EmergencyApiController.reverseGeocode()} ({@code GET /api/reverse-geocode}) ← {@code frontend/app.js:updateOriginAddress()}
+     * - [어디로 가는가 (Outgoing)] : {@link #parseReverseGeocodeJson} → {@code dto/ReverseGeocodeResponseDto.java} → {@code #origin-address-text} 텍스트 갱신!
+     * <p>
+     * [성능 최적화]
+     * - 좌표를 소수점 넷째 자리({@code %.4f,%.4f} ≈ 약 11m 격자)로 반올림한 캐시 키({@code reverseGeocodeCache})를 사용하여
+     *   비슷한 지점을 다시 찍었을 때 외부 API 호출 없이 즉시 응답합니다.
      */
     public ReverseGeocodeResponseDto reverseGeocode(double lat, double lng) {
         String cacheKey = String.format(Locale.US, "%.4f,%.4f", lat, lng);
@@ -678,10 +717,16 @@ public class NaverDirectionsService {
     }
 
     /**
-     * [메서드 역할]
-     * 네이버 클라우드 플랫폼 Geocoding API (`map-geocode/v2/geocode`)를 호출하여
-     * 입력된 주소/지역명을 위경도 좌표로 변환합니다.
-     * 도로명/지번 주소 외에 기관명이나 랜드마크 검색어도 찾을 수 있도록 병원 주소록 및 Nominatim 폴백을 함께 지원합니다.
+     * [메서드 역할 — 3단계 하이브리드 지오코딩: 주소/장소 검색어 → 위경도 좌표 변환]
+     * <p>
+     * [코드의 경로성]
+     * - [어디서 왔는가 (Incoming)] : {@code EmergencyApiController.geocode()} ({@code GET /api/geocode}) ← {@code frontend/app.js:searchAddressAndMove()}
+     * - [어디로 가는가 (Outgoing)] : {@code dto/GeocodeResponseDto.java} 반환 → 지도 중심 이동 및 출발지 갱신!
+     * <p>
+     * [3단계 폴백 탐색 순서]
+     * 1단계: 네이버 클라우드 Geocoding API로 정확한 도로명·지번 주소 검색 ({@code parseGeocodeJson})
+     * 2단계: 결과가 부족하면 백엔드 메모리의 전국 530개 병원 이름/주소({@code hospitals})에서 부분 일치 검색
+     * 3단계: 그래도 결과가 없으면("원주시청", "강릉역" 같은 랜드마크 검색 시) OpenStreetMap Nominatim 한국 영역 검색으로 보조!
      */
     public GeocodeResponseDto geocode(String query, List<HospitalDto> hospitals) {
         String safeQuery = query != null ? query.trim() : "";
@@ -816,7 +861,7 @@ public class NaverDirectionsService {
 
     /**
      * [메서드 역할]
-     * 밀리초(`durationMs`) 단위의 예상 소요 시간을 사람이 읽기 쉬운 한국어 시간 문자열로 변환합니다.
+     * 밀리초({@code durationMs}) 단위의 예상 소요 시간을 사람이 읽기 쉬운 한국어 시간 문자열로 변환합니다.
      */
     public static String formatDurationKorean(long durationMs) {
         if (durationMs <= 0) {
@@ -857,6 +902,16 @@ public class NaverDirectionsService {
         return OPTION_LABELS.containsKey(lower) ? lower : "trafast";
     }
 
+    /**
+     * [메서드 역할 — 세부 구간별 주행 속도 기반 실시간 혼잡도 정밀 보정 엔진]
+     * 네이버 Directions API의 기본 {@code section} 배열은 주요 큰 도로 단위로만 뭉뚱그려 내려오는 경우가 있어,
+     * 교차로 단위 안내 배열인 {@code guide}(거리 {@code distance}와 소요시간 {@code duration} 포함)에서 구간 평균 속도({@code speedKmh})를 역산해
+     * 고속도로({@code expressway}) vs 일반도로 기준에 맞춰 혼잡도({@code 1}: 원활 초록, {@code 2}: 서행 주황, {@code 3}: 정체 빨강)를 세밀하게 쪼개 줍니다!
+     * <p>
+     * [수정 시 영향 및 예시]
+     * - 일반도로 정체(빨강, {@code 3}) 기준 속도를 시속 {@code 16km/h} 미만에서 {@code 20km/h} 미만으로 더 민감하게 바꾸고 싶다면
+     *   아래 {@link #classifyCongestionBySpeed(int, boolean)} 메서드의 {@code if (speedKmh < 16)}을 {@code if (speedKmh < 20)}으로 수정하세요.
+     */
     private static List<DirectionsResponseDto.RouteSectionDto> buildDetailedSections(
             JsonNode sectionNode,
             JsonNode guideNode

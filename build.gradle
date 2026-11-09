@@ -3,29 +3,51 @@
  * [파일 역할]
  * 모노레포 루트 Gradle 빌드 스크립트 (Root build.gradle)
  *
+ * [파이썬 장고(Django) 비유]
+ * - Python 모노레포 최상위의 `Makefile` 또는 루트 `pyproject.toml`과 같은 역할입니다.
+ * - 장고에서 `python manage.py runserver`를 최상위 폴더에서도 바로 실행할 수 있게
+ *   단축 명령어를 만들어 둔 것처럼, 루트에서 `./gradlew bootRun`을 치면
+ *   하위 `backend/` 폴더의 서버 실행 명령으로 자동 연결해 줍니다.
+ *
+ * [코드의 경로성 (어디서 오고 어디로 가는가?)]
+ * - [호출 출발지 (Incoming)] : 개발자 터미널 명령어 (`./gradlew bootRun`, `./gradlew bootJar`)
+ *   또는 `settings.gradle`이 이 루트 프로젝트를 인식한 직후 실행됩니다.
+ * - [다음 참조 파일 (Outgoing)] : 하위 모듈인 `backend/build.gradle`의 `:backend:bootRun`,
+ *   `:backend:bootJar` 태스크를 호출하여 실제 Java 컴파일 및 Spring Boot 실행을 위임합니다.
+ *
  * [담당 기능]
- * 1. 모노레포 전체의 그룹 ID(com.yonsei119)와 버전(2.0.0)을 일괄 지정합니다.
- * 2. 루트 경로에서도 `./gradlew bootRun`, `./gradlew bootJar`를 바로 실행할 수 있도록
+ * 1. 모노레포 전체의 그룹 ID(`com.yonsei119`)와 버전(`2.0.0`)을 일괄 지정합니다.
+ * 2. 외부 라이브러리(Spring Boot 등)를 내려받을 중앙 저장소(`mavenCentral()` — 파이썬의 PyPI와 동일)를 지정합니다.
+ * 3. 루트 경로에서도 `./gradlew bootRun`, `./gradlew bootJar`를 바로 실행할 수 있도록
  *    하위 `:backend` 모듈의 태스크로 위임(Shortcut Task)을 연결합니다.
  *
  * [수정 시 영향 및 예시]
- * - 프로젝트 전체 버전을 올릴 때 `version` 값을 수정하면 빌드 산출물(JAR)의 버전이 바뀝니다.
+ * - 프로젝트 전체 버전을 올릴 때 `version` 값을 수정하면 빌드 산출물(JAR) 메타데이터 버전이 바뀝니다.
  *   예시(변경 전): version = '2.0.0'
  *   예시(변경 후): version = '2.1.0'
+ * - 루트에서도 `./gradlew checkAll` 같은 단축 테스트 명령어를 추가하고 싶다면 아래처럼 등록합니다:
+ *   예시(추가 코드):
+ *     tasks.register('checkAll') {
+ *         dependsOn(':backend:test')
+ *     }
  * ============================================================================
  */
 allprojects {
+    // 모든 하위 모듈(현재 `:backend`)에 공통으로 부여할 패키지 네임스페이스와 버전입니다.
     group = 'com.yonsei119'
     version = '2.0.0'
 
     repositories {
+        // 파이썬 `pip`가 PyPI(pypi.org)에서 패키지를 받듯, Java 라이브러리를 Maven Central에서 내려받습니다.
         mavenCentral()
     }
 }
 
 /*
- * [기능 설명]
- * 루트 폴더에서 `./gradlew bootRun` 실행 시 `:backend:bootRun`이 실행되도록 연결합니다.
+ * [태스크 역할] `bootRun` 단축 실행 태스크
+ * - [어디서 왔는가] 터미널의 `./gradlew bootRun` 또는 IntelliJ Gradle 패널 실행
+ * - [어디로 가는가] `backend/build.gradle`의 `tasks.named('bootRun')` → `Yonsei119Application.main()` 실행
+ * - [수정 시 영향] `dependsOn` 문자열을 바꾸면 실행 대상 하위 모듈이 바뀝니다.
  */
 tasks.register('bootRun') {
     group = 'application'
@@ -34,8 +56,10 @@ tasks.register('bootRun') {
 }
 
 /*
- * [기능 설명]
- * 루트 폴더에서 `./gradlew bootJar` 실행 시 `:backend:bootJar`가 실행되도록 연결합니다.
+ * [태스크 역할] `bootJar` 배포용 단일 JAR 패키징 단축 태스크
+ * - [어디서 왔는가] 터미널의 `./gradlew bootJar` 또는 Docker/Render 배포 스크립트
+ * - [어디로 가는가] `backend/build.gradle`의 `copyFrontendToStatic` → `bootJar` 실행 →
+ *   `backend/build/libs/yonsei119-backend.jar` 파일 생성
  */
 tasks.register('bootJar') {
     group = 'build'

@@ -26,19 +26,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * ============================================================================
  * [클래스 역할]
- * 연세 119 응급실 정보 시스템 백엔드의 핵심 도메인 로직을 검증하는 통합 테스트 클래스입니다.
+ * 연세 119 응급실 정보 시스템 백엔드의 핵심 도메인 로직이 코드 수정 후에도 깨지지 않았는지
+ * 자동으로 검증하는 **JUnit 5 + Spring Boot 통합 테스트** 클래스입니다.
  * <p>
- * [검증 항목]
- * 1. 제5기 상급종합병원 / 권역응급의료센터 / 의료원 / 일반·기타 자동 분류 정확도 검증
- * 2. 현장 실사 도메인 규칙(음수 병상 = 초과수용 `-4` 보존, 빈 값 `""` 보존) XML 파싱 검증
- * 3. 공공데이터포털 인증키 이중 인코딩 방지 로직 검증
- * 4. 7대 OpenAPI 데이터셋의 `HPID` 기준 교차 병합 및 대한민국 좌표 유효성 필터링 검증
- * 5. 네이버 Directions 5 및 Directions 15 JSON 응답 파싱(소요시간, 거리, 요금, 폴리라인 경로) 검증
+ * [파이썬 장고(Django) 비유]
+ * - 장고 앱의 **{@code tests.py} ({@code from django.test import TestCase})** 또는 **{@code pytest}** 테스트 파일과 완전히 같습니다!
+ * - 장고에서 {@code python manage.py test}를 실행하듯, 터미널에서 {@code ./gradlew test}를 실행하면 이 파일 안의
+ *   {@code @Test} 메서드 7개가 순서대로 실행되며 초록불({@code BUILD SUCCESSFUL}) 여부를 판별합니다.
+ * <p>
+ * [코드의 경로성 (어디서 실행되고 어떤 파일들을 검증하는가?)]
+ * - [실행 주체 (Incoming)] : {@code backend/build.gradle}의 {@code tasks.named('test') { useJUnitPlatform() }}
+ * - [검증 대상 파일들 (Outgoing Targets)] :
+ *   1) {@link #testHospitalClassification()} → {@code service/HospitalClassifier.java} 검증
+ *   2) {@link #testXmlParsingPreservesOverflowAndBlankValues()} → {@code service/NmcOpenApiClient.java} (음수 병상·빈 값 보존) 검증
+ *   3) {@link #testServiceKeyEncoding()} → {@code service/NmcOpenApiClient.java} (인증키 이중 인코딩 방지) 검증
+ *   4) {@link #testDatasetCrossMerge()} → {@code service/EmergencyDataService.java} ({@code HPID} 7종 병합 및 오류 좌표 제외) 검증
+ *   5) {@link #testNaverDirectionsJsonParsing()} → {@code service/NaverDirectionsService.java} (Directions 5/15 파싱) 검증
+ *   6) {@link #testXmlParsingDetectsFailureResponses()} → {@code service/NmcOpenApiClient.java} (장애 응답 감지) 검증
+ *   7) {@link #testMultiOptionAndGeocodingParsing()} → {@code service/NaverDirectionsService.java} (다중 옵션 및 지오코딩) 검증
+ * <p>
+ * [참고: 왜 {@code @SpringBootTest(properties = "yonsei119.nemc.auto-refresh-enabled=false")}가 붙어 있나요?]
+ * - 테스트를 돌릴 때마다 실제 공공데이터포털 서버에 7개 대용량 API 요청을 날리면 테스트가 느려지고 트래픽을 소모하므로,
+ *   테스트 환경에서만 {@code application.yml}의 {@code auto-refresh-enabled} 값을 임시로 {@code false}로 덮어쓴 것입니다!
+ *   (장고 테스트의 {@code @override_settings(NEMC_AUTO_REFRESH_ENABLED=False)} 데코레이터와 똑같은 기능입니다.)
  * ============================================================================
  */
 @SpringBootTest(properties = "yonsei119.nemc.auto-refresh-enabled=false")
 class Yonsei119BackendTests {
 
+    /** 테스트 대상 빈(Bean)들을 Spring 컨테이너로부터 자동 주입받습니다 ({@code @Autowired}). */
     @Autowired
     private HospitalClassifier hospitalClassifier;
 
@@ -51,6 +67,11 @@ class Yonsei119BackendTests {
     @Autowired
     private NaverDirectionsService naverDirectionsService;
 
+    /**
+     * [테스트 1] {@code service/HospitalClassifier.java} 검증
+     * - 원주세브란스기독병원이 상급종합병원({@code tertiary})이자 동시에 권역응급의료센터({@code regional=true})로 분류되는지,
+     *   원주의료원이 의료원({@code medical})으로, 일반 병원이 기타({@code other})로 정확히 나뉘는지 확인합니다.
+     */
     @Test
     @DisplayName("1. 상급종합병원 / 권역응급의료센터 / 의료원 / 일반·기타 종별 분류가 정확히 동작해야 한다")
     void testHospitalClassification() {
@@ -86,6 +107,10 @@ class Yonsei119BackendTests {
         assertEquals("일반·기타 응급의료기관", otherType.label());
     }
 
+    /**
+     * [테스트 2] {@code service/NmcOpenApiClient.java}의 {@code parseXmlResponse()} 도메인 규칙 검증
+     * - 응급실 포화 상태를 뜻하는 음수 병상({@code -4})과 미보고 빈 태그(`{@code )가 }0`으로 왜곡되지 않는지 확인합니다.
+     */
     @Test
     @DisplayName("2. XML 파싱 시 음수 병상 값(초과수용)과 미보고 빈 값을 0으로 왜곡하지 않고 그대로 보존해야 한다")
     void testXmlParsingPreservesOverflowAndBlankValues() {
@@ -127,6 +152,9 @@ class Yonsei119BackendTests {
         assertEquals("N1", item.get("hvoxyayn"));
     }
 
+    /**
+     * [테스트 3] 공공데이터포털 인증키(Encoded / Decoded) 정규화 검증
+     */
     @Test
     @DisplayName("3. 공공데이터포털 인증키가 이미 인코딩된 경우 이중 인코딩하지 않아야 한다")
     void testServiceKeyEncoding() {
@@ -137,6 +165,9 @@ class Yonsei119BackendTests {
         assertEquals(encoded, NmcOpenApiClient.ensureUrlEncodedServiceKey(decoded));
     }
 
+    /**
+     * [테스트 4] {@code service/EmergencyDataService.java}의 {@code mergeDatasetsIntoSnapshot()} 7종 병합 검증
+     */
     @Test
     @DisplayName("4. 7개 데이터셋이 HPID 기준으로 정확히 병합되고 유효하지 않은 좌표는 제외되어야 한다")
     void testDatasetCrossMerge() {
@@ -181,6 +212,9 @@ class Yonsei119BackendTests {
         assertEquals(1, hospital.messages().size());
     }
 
+    /**
+     * [테스트 5] {@code service/NaverDirectionsService.java}의 {@code parseDirectionsJson()} 경로/혼잡도 파싱 검증
+     */
     @Test
     @DisplayName("5. 네이버 Directions 5 / 15 JSON 응답 파싱이 정확히 수행되어야 한다")
     void testNaverDirectionsJsonParsing() {
@@ -259,6 +293,9 @@ class Yonsei119BackendTests {
         assertFalse(dto.guidePrompts().isEmpty());
     }
 
+    /**
+     * [테스트 6] 공공데이터포털 에러 XML({@code resultCode != 00}) 수신 시 폴백 보호 플래그 검증
+     */
     @Test
     @DisplayName("6. XML 비정상 응답(에러 코드 또는 빈 문자열) 시 success=false가 반환되어야 한다")
     void testXmlParsingDetectsFailureResponses() {
@@ -283,6 +320,9 @@ class Yonsei119BackendTests {
         assertTrue(errorParsed.items().isEmpty());
     }
 
+    /**
+     * [테스트 7] 다중 탐색 옵션({@code alternatives}) 및 역지오코딩·지오코딩 파서 검증
+     */
     @Test
     @DisplayName("7. 네이버 Directions 다중 옵션(trafast:traoptimal:traavoidtoll) 파싱 및 Reverse/Geocode 파싱이 정확히 동작해야 한다")
     void testMultiOptionAndGeocodingParsing() {

@@ -4,52 +4,112 @@
 /**
  * ==============================================================================
  * [파일 역할]
- * 연세 119 응급실 정보 시스템 프론트엔드 메인 애플리케이션 (frontend/app.js)
+ * 연세 119 응급실 정보 시스템 — 프론트엔드 메인 컨트롤러 (frontend/app.js)
  *
- * [모노레포 아키텍처 및 리팩토링 내역]
- * 1. 백엔드(Java Spring Boot) 이관 및 레거시 JS 코드 정리 (요구사항 13, 14 반영):
- *    - 기존 브라우저에 노출되어 있던 공공데이터포털 `API_KEY`, `API_ROOT`, XML 파서(`readXml`, `fieldMap`),
- *      다중 페이지 수집기(`requestPage`, `requestAll`), 데이터 병합기(`groupById`),
- *      상급종합병원 분류 사전(`TERTIARY_2024_2026`, `REGION_PREFIX`, `classify`, `isRegional`) 및
- *      미사용 상수(`DISEASES`, `BED_GROUPS`, `EQUIPMENT_BASELINES`)를 프론트엔드에서 완전히 제거했습니다.
- *    - 대신 백엔드의 단일 통합 엔드포인트(`GET /api/hospitals`)로부터 정제된 JSON 스냅샷을 수신합니다.
- * 2. 카카오맵 폐기 및 네이버 지도(NAVER Maps JS v3) 전환 (요구사항 8 반영):
- *    - `naver.maps.Map`, `naver.maps.Circle`, `naver.maps.LatLngBounds`, `naver.maps.Polyline`,
- *      커스텀 `naver.maps.OverlayView` 서브클래스를 사용하여 지도 렌더링을 전면 재구축했습니다.
- * 3. 네이버 Directions 5 및 Directions 15 자동차 경로·예상 소요 시간(ETA) 연동 (요구사항 10 반영):
- *    - 백엔드 `GET /api/directions`를 호출하여 실시간 자동차 주행 시간, 실도로 거리, 택시비·통행료·유류비,
- *      턴바이턴(Turn-by-Turn) 경로 안내 및 지도 위 폴리라인(Polyline) 렌더링을 제공합니다.
- * 4. 국립중앙의료원 OpenAPI 설명서(V13) 더블체크 반영 (요구사항 3 반영):
- *    - 현장 실사 도메인 규칙 보존: 음수 병상 값(`< 0`)은 **'초과수용'**, 빈 값(`null`/`""`)은 **`'-'`**로 엄격 분리 표기.
- *    - 누락되어 있던 실시간 병상(`hv13`, `hv14`, `hv61`, `hv4`, `hv22`~`hv26`), 구급차 가용여부(`hvamyn`),
- *      응급실 게이트키퍼(`mkioskty28`), `N1` 상태값 처리를 모두 보완했습니다.
+ * [코드의 경로성 — 프론트엔드와 백엔드는 어떻게 연결되는가? (Python Django 비유 가이드)]
+ * 파이썬 장고(Django)에서 `템플릿 HTML/JS ↔ urls.py ↔ views.py ↔ services.py ↔ serializers.py`가
+ * 서로 바통을 주고받듯, 이 프로젝트도 아래와 같은 명확한 파일 경로로 이어집니다:
+ *
+ *   1) [진입 경로 (어떻게 이 JS 파일이 실행되는가?)]
+ *      - 브라우저가 `http://localhost:8080/` 접속
+ *      → `backend/.../config/WebConfig.java` (Django의 `urls.py` 정적 라우팅 + `STATICFILES_DIRS` 역할)
+ *      → `frontend/index.html` 로드
+ *      → `<script src="app.js" defer fetchpriority="high">`가 이 파일 하단의 `init()`을 자동 실행합니다.
+ *
+ *   2) [백엔드 API 호출 경로 (이 파일의 `fetch(...)`가 백엔드 어느 Java 파일로 가는가?)]
+ *      ┌─────────────────────────────┬──────────────────────────────────────────┬─────────────────────────────────────────────┐
+ *      │ 프론트엔드 함수 (`app.js`)   │ HTTP 엔드포인트 (`EmergencyApiController`) │ 실제 처리 백엔드 서비스 & 반환 DTO (`.java`) │
+ *      │ (브라우저 클라이언트)         │ (Django의 `urls.py` + `views.py` 역할)    │ (Django의 `services.py` + `serializers.py`) │
+ *      ├─────────────────────────────┼──────────────────────────────────────────┼─────────────────────────────────────────────┤
+ *      │ `fetchData()`               │ `GET /api/hospitals`                     │ `EmergencyDataService` → `EmergencySnapshotDto` │
+ *      │                             │                                          │ (내부에서 `NmcOpenApiClient`, `HospitalClassifier` 호출) │
+ *      │ `loadDirectionsForHospital` │ `GET /api/directions`                    │ `NaverDirectionsService` → `DirectionsResponseDto` │
+ *      │ & `refreshActiveRoute()`    │                                          │ (네이버 Directions 5 / 15 실도로 경로·혼잡도) │
+ *      │ `loadEtaRanking()`          │ `GET /api/directions/rank`               │ `NaverDirectionsService` → `List<HospitalEtaRankDto>` │
+ *      │ `geocodeAndMoveOrigin()`    │ `GET /api/geocode`                       │ `NaverDirectionsService` → `GeocodeResponseDto` │
+ *      │ `updateOriginAddress()`     │ `GET /api/reverse-geocode`               │ `NaverDirectionsService` → `ReverseGeocodeResponseDto` │
+ *      └─────────────────────────────┴──────────────────────────────────────────┴─────────────────────────────────────────────┘
+ *
+ *   3) [프론트엔드 내부 파일 간 상호작용 (`index.html` ↔ `app.js` ↔ `style.css`)]
+ *      - `index.html`: `#map`, `#search-panel`, `#active-route-banner`, `#sheet` 등 DOM 뼈대(ID) 제공
+ *      - `app.js`    : DOM ID(`byId(...)`)를 찾아 데이터 주입, 이벤트 바인딩, 네이버 WebGL 지도 제어
+ *      - `style.css` : `app.js`가 토글하는 클래스(`.dark-mode`, `.open`, `.touch-device`, `.hospital-card`)와
+ *                      인라인 `style.translate` 좌표를 받아 GPU 합성 레이어에서 60fps로 화면에 그림
+ *
+ * [Modern Web Guidance 4단계 지도·웹 성능 최적화 적용 요약]
+ * - Phase 1: `createNaverDomOverlay`에서 레이아웃 리플로우를 유발하는 `left`/`top` 대신
+ *            GPU 컴포지터 전용 `style.translate` 적용 (`CSS.supports('translate', '0px')` 폴백 포함)
+ * - Phase 2: `state.markerMap` 기반 Key-Diffing으로 지도 이동 시 기존 `.hospital-card` DOM 재사용,
+ *            `groupCards`를 $O(N^2)$에서 $O(N)$ 2D 공간 해시 격자(Spatial Hash Grid)로 개선,
+ *            경로 안내 폴리라인을 단일 Mapbox GL GeoJSON 소스(`yonsei-route-source`)로 통합해 `< 1ms` 갱신
+ * - Phase 3: 역지오코딩 및 백그라운드 자동 갱신 `fetch()`에 `priority: 'low'` 부여해 초기 지도 타일 대역폭 보호
+ * - Phase 4: `<meta name="color-scheme">` 동기화, `resize` 이벤트 `requestAnimationFrame` 병합,
+ *            모바일 메뉴 이동 시 상태 보존 `Element.prototype.moveBefore()` 점진적 향상 적용
  * ==============================================================================
  */
 
-/** 지도 위 병원 오버레이 카드의 가로/세로 크기 (충돌 클러스터링 계산 기준) */
+/**
+ * 지도 위 병원 오버레이 카드의 가로/세로 기준 픽셀 크기 (2D 공간 해시 클러스터링 격자 기준)
+ *
+ * [코드의 경로성]
+ * - 참조하는 곳: 이 파일의 `groupCards()`에서 카드 간 충돌 범위(`CARD_WIDTH + 10`, `CARD_HEIGHT + 14`) 계산에 사용
+ * - 짝을 이루는 파일: `frontend/style.css`의 `.hospital-card { width: 168px; }`
+ *
+ * [수정 시 영향 및 예시]
+ * - 병원 카드 가로 폭을 `168px`에서 `188px`로 넓히고 싶다면 (`style.css`의 `.hospital-card` `width`도 함께 수정):
+ *   변경 전: const CARD_WIDTH = 168;
+ *   변경 후: const CARD_WIDTH = 188;
+ */
 const CARD_WIDTH = 168;
 const CARD_HEIGHT = 60;
 
-/** 이용 안내 모달 '다시 보지 않기' LocalStorage 저장 키 */
+/**
+ * 브라우저가 개별 CSS `translate` 속성(GPU 컴포지터 직접 합성)을 지원하는지 최초 1회 판별합니다.
+ * - 지원 브라우저(최신 Chrome/Safari/Edge/Firefox): `style.translate = "Xpx Ypx"` 사용 (리플로우 0회)
+ * - 구형 브라우저 폴백: `style.left = "Xpx"; style.top = "Ypx"` 자동 전환
+ */
+const CAN_USE_CSS_TRANSLATE =
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('translate', '0px');
+
+/**
+ * 네이버 GL 지도 단일 경로 GeoJSON 소스 ID 상수
+ * - 수십 개의 `naver.maps.Polyline` 객체를 매번 생성·파괴하는 대신,
+ *   단 1개의 GeoJSON Source(`yonsei-route-source`) 데이터만 `setData()`로 교체하여 실시간 우클릭 경로를 1ms 내 갱신합니다.
+ */
+const GL_ROUTE_SOURCE_ID = 'yonsei-route-source';
+
+/**
+ * 이용 안내 모달(`index.html`의 `#notice-dialog`) '다시 보지 않기' LocalStorage 저장 키
+ * - 안내 공지 내용을 전면 개편하여 모든 사용자에게 다시 1회 띄우고 싶다면 `'emergency-notice-hidden-v2'`로 변경하세요.
+ */
 const NOTICE_KEY = 'emergency-notice-hidden-v1';
 
 /**
  * 네이버 지도 Style Editor 다크 모드(야간 관제) Custom Style ID
  *
+ * [코드의 경로성]
+ * - 사용되는 곳: 하단 `mountNaverMap()`에서 `state.darkMode === true`일 때 `glOptions.customStyleId`로 전달됨
+ * - 백엔드 설정과 대응: `backend/src/main/resources/application.yml`의 `yonsei119.naver.dark-style-id`
+ *
  * [수정 시 영향 및 예시]
- * - 네이버 클라우드 플랫폼 Style Editor에서 다른 다크 테마 스타일 ID로 교체하고 싶다면:
+ * - 네이버 클라우드 플랫폼 Style Editor에서 새로 발행한 다크 테마 스타일 ID로 교체하고 싶다면:
  *   변경 전: const DEFAULT_NAVER_DARK_STYLE_ID = '4b12b380-f70c-4d42-85df-ecf7961ff041';
- *   변경 후: const DEFAULT_NAVER_DARK_STYLE_ID = '새로운-스타일-ID';
+ *   변경 후: const DEFAULT_NAVER_DARK_STYLE_ID = '새로-발급받은-스타일-UUID';
  */
 const DEFAULT_NAVER_DARK_STYLE_ID = '4b12b380-f70c-4d42-85df-ecf7961ff041';
 
 /**
- * 기본 기준점 좌표 (사용자 GPS 미수신 시 서울시청 기준 폴백)
+ * 기본 출발 기준점 좌표 (사용자가 GPS 권한을 거부했거나 '초기화' 버튼을 눌렀을 때 돌아가는 기본 위치)
+ *
+ * [코드의 경로성]
+ * - 참조하는 함수: `state` 초기값, `locate()` 권한 거부 시 안내, `resetOriginAndRoute()` 초기화 복귀 좌표
  *
  * [수정 시 영향 및 예시]
- * - 초기 폴백 좌표를 연세대학교 미래캠퍼스로 변경하고 싶다면:
+ * - 초기 기준점을 서울시청 대신 연세대학교 세브란스병원(신촌)으로 바꾸고 싶다면:
  *   변경 전: const DEFAULT_ORIGIN = { lat: 37.5668, lng: 126.9786, label: '서울시청' };
- *   변경 후: const DEFAULT_ORIGIN = { lat: 37.31904, lng: 127.90123, label: '연세대 미래캠퍼스' };
+ *   변경 후: const DEFAULT_ORIGIN = { lat: 37.5621, lng: 126.9408, label: '연세대 세브란스병원' };
  */
 const DEFAULT_ORIGIN = {
     lat: 37.5668,
@@ -59,7 +119,9 @@ const DEFAULT_ORIGIN = {
 
 /* --------------------------------------------------------------------------
    [1. 필수 특수 의료 장비 11종 필드 매핑 (EQUIPMENT)]
-   - 국립중앙의료원 OpenAPI 명세서(V13) 기준 장비 가용 여부(Y/N/N1) 플래그
+   - 출처: 국립중앙의료원(NMC) 응급의료정보 OpenAPI 활용가이드(V13)
+   - 경로성: 백엔드 `NmcOpenApiClient.java`가 공공데이터포털 XML에서 수집해
+     `HospitalDto.beds` 맵에 소문자 키로 담아 보내주면, 이 사전을 참조해 한글 장비명으로 표시합니다.
    -------------------------------------------------------------------------- */
 const EQUIPMENT = {
     hvamyn: '구급차',
@@ -77,7 +139,9 @@ const EQUIPMENT = {
 
 /* --------------------------------------------------------------------------
    [2. 실시간 가용 병상 수동 매핑 사전 (HV_LABELS)]
-   - 국립중앙의료원 OpenAPI 공식 활용가이드(V13) 전수 대조를 통해 구축한 매핑 사전입니다.
+   - 역할: 공공데이터 XML/JSON의 영문 코드(`hv2`, `hv28` 등)를 의료진/시민이 읽을 수 있는 한글 명칭으로 변환합니다.
+   - 사용되는 곳: `API_FIELD_LABELS` 통합 사전 및 하단 `renderRawBeds()` 개발자 모드 원본 인스펙터
+   - 수정 예시: `hv28: '소아'`를 `hv28: '소아응급실'`로 바꾸면 개발자 모드 코드 설명에 즉시 반영됩니다.
    -------------------------------------------------------------------------- */
 const HV_LABELS = {
     hv1: '예비항목2',
@@ -128,8 +192,8 @@ const HV_LABELS = {
 
 /* --------------------------------------------------------------------------
    [3. 기준 병상수(총 허가/운영 병상) 수동 매핑 사전 (HVS_LABELS)]
-   - 가용률(가용수 / 기준수) 계산 시 분모(기준) 데이터로 활용되는 코드 사전입니다.
-   - OpenAPI 설명서(V13) 17페이지 대조 반영: hvs31을 '인공호흡기 조산아 기준'으로 통일했습니다.
+   - 역할: 가용률(`현재 가용 병상 / 기준 병상`) 계산 시 분모(기준치) 역할을 하는 `hvs*` 코드 사전입니다.
+   - 사용되는 곳: `getBedStatusBadge()`, `createEquipmentCell()`, `renderRawBeds()`
    -------------------------------------------------------------------------- */
 const HVS_LABELS = {
     hvs01: '일반 기준',
@@ -190,6 +254,8 @@ const HVS_LABELS = {
 
 /* --------------------------------------------------------------------------
    [4. API 응답 전체 필드 통합 사전 (API_FIELD_LABELS)]
+   - 역할: 위 `HV_LABELS`, `HVS_LABELS`, `EQUIPMENT`에 공통 핵심 코드(`hvec`, `hvoc` 등)를 합친 마스터 사전입니다.
+   - 참조하는 함수: `fieldLabel(key)` → `renderRawBeds()`, `renderBasic()`
    -------------------------------------------------------------------------- */
 const API_FIELD_LABELS = {
     ...HV_LABELS,
@@ -220,9 +286,18 @@ const API_FIELD_LABELS = {
 /**
  * 애플리케이션 전역 런타임 상태 저장소 (`state`)
  *
- * [담당 기능]
- * - 네이버 지도 인스턴스(`map`), 반경 원(`circle`), 내 위치 마커(`locationMarker`),
- *   자동차 경로 폴리라인(`routePolyline`, `routeOutlinePolyline`), 현재 선택 병원(`selected`) 등을 관리합니다.
+ * [역할 설명]
+ * 프론트엔드 화면 전체가 공유하는 '단일 진실 공급원(Single Source of Truth)' 메모리 객체입니다.
+ * 지도 객체, 내 위치 좌표, 받아온 병원 목록, 현재 열려 있는 병원 시트, 활성화된 자동차 경로,
+ * 그리고 Key-Diffing용 마커 맵(`markerMap`)이 모두 이곳에 저장됩니다.
+ *
+ * [주요 속성 수정 시 영향 예시]
+ * - `selectedDirectionOption: 'trafast'`:
+ *   최초 병원 클릭 시 기본 길찾기 옵션을 '실시간 빠른길(`trafast`)' 대신 '실시간 최적(`traoptimal`)'으로 바꾸려면:
+ *   변경 전: selectedDirectionOption: 'trafast',
+ *   변경 후: selectedDirectionOption: 'traoptimal',
+ * - `darkMode: true`:
+ *   최초 실행 테마를 라이트 모드로 바꾸려면 `false`로 변경하고 `initThemeToggle()`의 `applyTheme(false, false)`도 맞추세요.
  */
 const state = {
     map: null,
@@ -232,7 +307,11 @@ const state = {
     routePolyline: null,
     routeOutlinePolyline: null,
     routeSectionPolylines: [],
-    activeRouteData: null,
+    glRouteActive: false,
+    glRouteMap: null,
+    sheetRouteData: null,
+    activeRoute: null,
+    activeRouteController: null,
     locating: false,
     origin: { lat: DEFAULT_ORIGIN.lat, lng: DEFAULT_ORIGIN.lng },
     originLabel: DEFAULT_ORIGIN.label,
@@ -241,8 +320,6 @@ const state = {
     mobileMenuOpen: false,
     trafficEnabled: false,
     trafficLayer: null,
-    panorama: null,
-    panoramaOpen: false,
     etaRankOpen: false,
     etaRankController: null,
     reverseGeocodeController: null,
@@ -252,6 +329,7 @@ const state = {
     lastUpdated: null,
     hospitals: [],
     markers: [],
+    markerMap: new Map(),
     selected: null,
     sources: {},
     controller: null,
@@ -270,6 +348,10 @@ const state = {
     diagnostics: {
         circleCreatedCount: 0,
         markersUpdatedCount: 0,
+        markersCreatedCount: 0,
+        markersReusedCount: 0,
+        markersRemovedCount: 0,
+        glRouteUpdateCount: 0,
         idleEventCount: 0,
         themeSwitchCount: 0,
         lastHospitalOpened: null,
@@ -277,7 +359,57 @@ const state = {
     }
 };
 
+/**
+ * `document.getElementById(id)` 단축 헬퍼 함수
+ * - `frontend/index.html`에 선언된 `id="..."` 요소를 빠르게 조회할 때 파일 전역에서 사용합니다.
+ */
 const byId = id => document.getElementById(id);
+
+/**
+ * [함수 역할]
+ * 메인 스레드 장기 작업(Long Task > 50ms)을 분할하여 브라우저가 사용자 터치·지도 드래그 입력을
+ * 끊김 없이 먼저 처리할 수 있도록 실행 제어권을 잠시 양보(Yield)합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `fetchData()`에서 수백 개 병원 데이터를 전처리할 때 45ms 초과 시 호출
+ * - 웹 표준 API: 최신 브라우저의 `window.scheduler.yield()`를 우선 사용하고, 미지원 환경에서는 `setTimeout(0)`으로 안전하게 폴백합니다.
+ *
+ * @returns {Promise<void>} 다음 작업 재개 시점 Promise
+ */
+function yieldToMain() {
+    if (typeof window !== 'undefined' && 'scheduler' in window && typeof window.scheduler?.yield === 'function') {
+        return window.scheduler.yield();
+    }
+    return new Promise(resolve => {
+        setTimeout(resolve, 0);
+    });
+}
+
+/**
+ * [함수 역할]
+ * 병원 객체(`hospital`)에 대응하는 네이버 지도 `naver.maps.LatLng` 인스턴스를 최초 1회만 생성하여
+ * `hospital._latLng`에 캐싱해 두고 재사용합니다.
+ *
+ * [최적화 효과 & 코드의 경로성]
+ * - 기존에는 지도를 드래그할 때마다(`idle` → `updateMarkers()`) 수백 개 병원마다 `new naver.maps.LatLng()` 객체를
+ *   매번 새로 할당하여 가비지 컬렉션(GC) 부하가 발생했습니다.
+ * - 이제 `fetchData()`, `updateMarkers()`, `focusHospitalOnMap()` 등에서 이 함수를 공유하여 객체 할당을 제거합니다.
+ *
+ * @param {Object} hospital 병원 객체 (`lat`, `lng` 포함)
+ * @returns {Object} 캐싱된 `naver.maps.LatLng` 인스턴스
+ */
+function getHospitalLatLng(hospital) {
+    if (
+        !hospital._latLng ||
+        hospital._latLngLat !== hospital.lat ||
+        hospital._latLngLng !== hospital.lng
+    ) {
+        hospital._latLng = new naver.maps.LatLng(hospital.lat, hospital.lng);
+        hospital._latLngLat = hospital.lat;
+        hospital._latLngLng = hospital.lng;
+    }
+    return hospital._latLng;
+}
 
 /* --------------------------------------------------------------------------
    [5. 데이터 정제 및 결측치 방어 유틸리티]
@@ -285,14 +417,19 @@ const byId = id => document.getElementById(id);
 
 /**
  * [함수 역할]
- * 주어진 값이 결측치(null, undefined, 공백, 'null', '-' 등)인지 판별합니다.
+ * 백엔드에서 내려온 문자열/숫자 값이 결측치(`null`, `undefined`, 빈 문자열, `'null'`, `'-'` 등)인지 판별합니다.
  *
- * [수정 시 영향 및 예시]
- * - 숫자 `0`은 결측치가 아니므로 `false`를 반환합니다.
- * - 이를 수정하여 `0`까지 결측치로 취급하면 병상 0석(만실)이 미보고(`-`)로 왜곡되므로 절대 주의해야 합니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `displayValue()`, `firstReported()`, `availability()`, `integerValue()`, `bedValue()`, `renderContacts()`
  *
- * @param {*} value 검사할 값
- * @returns {boolean} 결측치 여부
+ * [수정 시 영향 및 절대 주의사항]
+ * - 숫자 `0`은 결측치가 아니라 **'가용 병상 0석(만실)'**이라는 매우 중요한 응급실 상태이므로 `false`를 반환합니다.
+ * - 만약 추가로 `'미상'`이라는 문자열도 결측치로 취급하고 싶다면 정규식에 `|미상`을 추가하세요:
+ *   변경 전: /^(?:\s*|null|undefined|none|n\/?a|nan|[-−–—]+)$/i
+ *   변경 후: /^(?:\s*|null|undefined|none|n\/?a|nan|미상|[-−–—]+)$/i
+ *
+ * @param {*} value 검사할 원본 값
+ * @returns {boolean} 결측치이면 `true`, 유효한 값이면 `false`
  */
 function isMissing(value) {
     return value == null ||
@@ -303,10 +440,18 @@ function isMissing(value) {
 
 /**
  * [함수 역할]
- * 결측치인 경우 `'미정보'`를 반환하고, 값이 있으면 양끝 공백을 제거한 문자열을 반환합니다.
+ * 결측치인 경우 사용자 안내용 문자열 `'미정보'`를 반환하고, 유효한 값이면 앞뒤 공백을 제거해 반환합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `renderMessages()`, `renderRawBeds()`, `renderBasic()`, `openHospital()`
+ *
+ * [수정 시 영향 및 예시]
+ * - 값 미보고 시 `'미정보'` 대신 `'정보 없음'`으로 전체 문구를 통일하고 싶다면:
+ *   변경 전: return isMissing(value) ? '미정보' : String(value).trim();
+ *   변경 후: return isMissing(value) ? '정보 없음' : String(value).trim();
  *
  * @param {*} value 원본 값
- * @returns {string} 표시용 문자열
+ * @returns {string} 화면 표시용 문자열
  */
 function displayValue(value) {
     return isMissing(value) ? '미정보' : String(value).trim();
@@ -314,10 +459,13 @@ function displayValue(value) {
 
 /**
  * [함수 역할]
- * 여러 후보 값 중 결측치가 아닌 첫 번째 값을 반환합니다.
+ * 여러 후보 필드 값 중 결측치가 아닌 첫 번째 값을 찾아 반환합니다.
  *
- * @param {...*} values 후보 값 목록
- * @returns {*} 첫 번째 유효 값
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `renderSevere()`에서 중증질환 보고 시각(`fields.hvidate` 우선, 없으면 `fields.mkioskdate`) 선택 시 사용
+ *
+ * @param {...*} values 우선순위대로 나열한 후보 값 목록
+ * @returns {*} 첫 번째 유효 값 (모두 결측치이면 `undefined`)
  */
 function firstReported(...values) {
     return values.find(value => !isMissing(value));
@@ -325,7 +473,11 @@ function firstReported(...values) {
 
 /**
  * [함수 역할]
- * OpenAPI 필드 코드(예: `hvec`)를 `'hvec(일반(응급실 일반병상))'` 형태의 한글 설명 포함 라벨로 변환합니다.
+ * 공공데이터 OpenAPI 필드 영문 코드(예: `hvec`)를 `'hvec(일반(응급실 일반병상))'`처럼 한글 설명이 붙은 라벨로 변환합니다.
+ *
+ * [코드의 경로성]
+ * - 참조하는 데이터: 상단 `API_FIELD_LABELS` 통합 사전
+ * - 호출하는 곳(Incoming): `renderRawBeds()`, `renderBasic()` (병원 상세창 하단 개발자 모드 및 기본정보 표)
  *
  * @param {string} key XML/JSON 필드 키
  * @returns {string} 한글 설명이 포함된 필드 라벨
@@ -343,16 +495,20 @@ function fieldLabel(key) {
 
 /**
  * [함수 역할]
- * 중증질환 및 장비의 가용 여부(`Y`, `N`, `N1`, `가능`, `불가능` 등)를 판별합니다.
+ * 중증응급질환 수용 여부(`Y`, `N`, `N1`, `가능`, `불가능` 등) 원본 코드를 표준 상태 객체(`{ text, className }`)로 변환합니다.
  *
- * [OpenAPI 설명서 더블체크 반영]
- * 실제 NEMC OpenAPI 응답에는 `'N'` 외에도 `'N1'`(장비 미보유/불가 코드)이 반환되는 경우가 있으므로,
- * `upper.startsWith('N')` 조건을 추가하여 `'N1'`도 정확히 `'불가능'`(`no`)으로 분류합니다.
+ * [코드의 경로성]
+ * - 데이터 출처: 백엔드 `NmcOpenApiClient.java` → `HospitalDto.severe` 맵
+ * - 호출하는 곳(Incoming): `renderSevere()` (중증응급질환 28종 매트릭스 렌더링)
+ *
+ * [도메인 주의사항]
+ * - 실제 국립중앙의료원 OpenAPI 응답에는 `'N'` 외에도 `'N1'`(장비·인력 미보유 불가 코드)이 내려오므로
+ *   `upper.startsWith('N')` 조건으로 `'N1'`도 정확히 `'불가능'`(`no`)으로 처리합니다.
  *
  * @param {*} raw 원본 상태값
  * @param {string} [yes='가능'] 가능 시 표시 텍스트
  * @param {string} [no='불가능'] 불가능 시 표시 텍스트
- * @returns {{text: string, className: string}} 상태 객체
+ * @returns {{text: string, className: string}} 판별 결과 객체
  */
 function availability(raw, yes = '가능', no = '불가능') {
     if (isMissing(raw)) {
@@ -386,11 +542,14 @@ function availability(raw, yes = '가능', no = '불가능') {
 
 /**
  * [함수 역할]
- * 문자열을 부호 있는 정수(음수 포함)로 안전하게 파싱합니다.
- * 정수가 아니면 `null`을 반환합니다.
+ * 문자열이나 숫자를 부호 있는 안전 정수(음수 포함, 예: `-3`, `0`, `12`)로 파싱합니다.
+ * 정수가 아니거나 결측치이면 `null`을 반환합니다.
  *
- * @param {*} raw 원본 문자열/숫자
- * @returns {number|null} 파싱된 정수 또는 null
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `populateWaypointSelect()`, `getBedStatusBadge()`, `createEquipmentCell()`
+ *
+ * @param {*} raw 원본 문자열 또는 숫자
+ * @returns {number|null} 파싱된 정수 또는 `null`
  */
 function integerValue(raw) {
     if (isMissing(raw)) {
@@ -406,12 +565,16 @@ function integerValue(raw) {
 
 /**
  * [함수 역할]
- * 경량 DOM 엘리먼트 생성 헬퍼 함수입니다.
+ * XSS 취약점이 있는 `innerHTML` 문자열 조합 대신, 안전한 표준 DOM 엘리먼트를 생성하고
+ * 클래스명과 텍스트(`textContent`)를 한 줄로 지정하는 경량 DOM 팩토리 함수입니다.
  *
- * @param {string} tag 생성할 HTML 태그명
- * @param {string} [className=''] 적용할 CSS 클래스명
- * @param {string|number} [content=undefined] 삽입할 텍스트 콘텐츠
- * @returns {HTMLElement} 생성된 DOM 노드
+ * [코드의 경로성]
+ * - 파일 전역의 거의 모든 UI 렌더링 함수(`updateMarkers`, `renderBeds`, `loadEtaRanking` 등)에서 호출됩니다.
+ *
+ * @param {string} tag 생성할 HTML 태그명 (예: `'div'`, `'button'`, `'span'`)
+ * @param {string} [className=''] 적용할 CSS 클래스명 (`frontend/style.css`에 정의된 클래스)
+ * @param {string|number} [content=undefined] 삽입할 안전한 텍스트 콘텐츠
+ * @returns {HTMLElement} 생성된 DOM 엘리먼트
  */
 function node(tag, className = '', content = undefined) {
     const item = document.createElement(tag);
@@ -426,7 +589,11 @@ function node(tag, className = '', content = undefined) {
 
 /**
  * [함수 역할]
- * 전광판(Ticker/Marquee) 애니메이션을 위한 래퍼 엘리먼트를 생성합니다.
+ * 칸 너비보다 긴 텍스트를 전광판(Ticker/Marquee)처럼 좌우 스크롤하기 위한 래퍼 엘리먼트를 생성합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `renderSevere()`, `createBedCell()`, `createEquipmentCell()`
+ * - 연결되는 함수/CSS: 생성 후 `updateMarquees()`가 실제 넘침 픽셀을 측정해 `style.css`의 `.is-marquee` 애니메이션을 가동합니다.
  */
 function createMarqueeEl(tag, className = '', text = '', title = undefined) {
     const el = node(tag, className);
@@ -440,9 +607,19 @@ function createMarqueeEl(tag, className = '', text = '', title = undefined) {
 
 /**
  * [함수 역할]
- * 전광판(Marquee) 오버플로우 계산 및 CSS 애니메이션 변수를 동적으로 주입합니다.
- * `requestAnimationFrame` 내부에서 읽기(Read)와 쓰기(Write) 단계를 분리하여
- * 레이아웃 스래싱(Layout Thrashing)을 방지합니다.
+ * 상세 시트(`#sheet`) 내 병상·장비·중증질환 셀 중 텍스트가 칸을 넘치는 항목만 골라
+ * 전광판 스크롤 거리(`--ticker-diff`)와 속도(`--ticker-duration`) CSS 변수를 일괄 주입합니다.
+ *
+ * [성능 최적화 원리 & 코드의 경로성]
+ * - 호출하는 곳(Incoming): `openHospital()` 시트 열림 직후 및 `init()`의 `resize` 이벤트 병합 콜백
+ * - 연결되는 CSS: `frontend/style.css`의 `.is-marquee .marquee-inner` (`@keyframes egen-ticker`)
+ * - 레이아웃 스래싱(Layout Thrashing) 방지를 위해 `scrollWidth`/`clientWidth` **읽기(Read) 루프**를 모두 끝낸 뒤
+ *   **쓰기(Write) 루프**에서 클래스를 토글합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 전광판 글자가 흐르는 속도를 더 천천히 만들고 싶다면 `duration` 계산식의 나눗셈 분모(`25`)를 줄이세요:
+ *   변경 전: const duration = Math.max(5, Math.min(22, (overflow / 25) + 3.5));
+ *   변경 후: const duration = Math.max(7, Math.min(28, (overflow / 16) + 4.5));
  */
 function updateMarquees() {
     requestAnimationFrame(() => {
@@ -478,6 +655,11 @@ function updateMarquees() {
     });
 }
 
+/**
+ * [함수 역할]
+ * 검색 패널 내 상태 안내줄(`index.html`의 `#status`)에 진행 상태·오류 메시지를 표시하거나 숨깁니다.
+ * - 빈 문자열(`''`)을 넘기면 `hidden = true`가 되어 화면 공간을 차지하지 않습니다.
+ */
 function setStatus(message) {
     const statusEl = byId('status');
     if (!statusEl) {
@@ -487,28 +669,31 @@ function setStatus(message) {
     statusEl.hidden = !message;
 }
 
+/**
+ * [함수 역할]
+ * 대상 컨테이너 내부를 비우고 안내 문구(`<p class="empty-state">`) 하나만 깔끔하게 표시합니다.
+ */
 function empty(container, message) {
     container.replaceChildren(node('p', 'empty-state', message));
 }
 
 /* --------------------------------------------------------------------------
-   [6. 갱신 시간 및 반경 설정 UI 제어 (요구사항 12 반영)]
+   [6. 갱신 시간 및 반경 설정 UI 제어 (`index.html` #search-panel 연동)]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 우측 하단 검색 패널(`#search-panel`)의 새로고침 버튼 우측에 통합된
- * `갱신 시간`(`#updated-time`) 텍스트를 최신 동기화 시각으로 업데이트합니다.
+ * 검색 패널(`#search-panel`) 내 새로고침 버튼 옆의 `갱신 시간`(`index.html`의 `#updated-time`)을
+ * 백엔드 스냅샷 기준 최신 시각(한국 표준시 KST)으로 업데이트합니다.
  *
- * [요구사항 12 반영]
- * - 기존 좌측 상단에 있던 `'530개 기관'`(`#institution-count`) 업데이트 코드는 제거되었습니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `init()` 초기 실행 시, `fetchData()`가 `GET /api/hospitals` 수신을 완료했을 때
+ * - 가리키는 DOM(Outgoing): `frontend/index.html`의 `<time id="updated-time">`
  *
  * [수정 시 영향 및 예시]
  * - 시간 표시에 '초(second)' 단위까지 함께 보여주고 싶다면:
- *   예시(변경 전):
- *     hour: '2-digit', minute: '2-digit', hour12: false
- *   예시(변경 후):
- *     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+ *   변경 전: hour: '2-digit', minute: '2-digit', hour12: false
+ *   변경 후: hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
  */
 function updateSummary() {
     const time = byId('updated-time');
@@ -530,6 +715,14 @@ function updateSummary() {
     }
 }
 
+/**
+ * [함수 역할]
+ * 현재 출발 기준점의 이름(`내 위치`, `우클릭 지정 출발지`, `서울시청` 등)과 역지오코딩된 도로명/행정동 주소를 합쳐
+ * 사람이 읽기 쉬운 단일 문자열(예: `'우클릭 지정 출발지 (서울 중구 태평로1가)'`)로 반환합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateRadiusUI()`, `loadDirectionsForHospital()`, `openHospital()`
+ */
 function getOriginDisplayLabel() {
     const base = state.locationKnown ? (state.originLabel || '내 위치') : DEFAULT_ORIGIN.label;
     return state.originAddress ? `${base} (${state.originAddress})` : base;
@@ -537,7 +730,12 @@ function getOriginDisplayLabel() {
 
 /**
  * [함수 역할]
- * 탐색 반경 버튼(`#radius-button`)과 팝오버 안내 문구를 현재 선택된 반경 값으로 갱신합니다.
+ * 탐색 반경 버튼(`#radius-button`), 반경 팝오버 도움말(`#radius-help`), 출발 기준 주소 표시줄(`#origin-address-text`),
+ * 그리고 출발점 초기화 버튼(`#origin-reset-btn`)의 텍스트와 노출 여부를 현재 `state`와 동기화합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `initRadius()`, `locate()`, `updateOriginAddress()`, `setCustomOrigin()`, `resetOriginAndRoute()`
+ * - 가리키는 DOM(Outgoing): `frontend/index.html`의 `#radius`, `#radius-value`, `#radius-button`, `#radius-help`, `#origin-address-text`, `#origin-reset-btn`
  */
 function updateRadiusUI() {
     const value = byId('radius').value;
@@ -557,8 +755,17 @@ function updateRadiusUI() {
         addrText.textContent = `출발 기준: ${originDesc}`;
         addrText.title = `출발 기준: ${originDesc} (${state.origin.lat.toFixed(5)}, ${state.origin.lng.toFixed(5)})`;
     }
+
+    const originResetBtn = byId('origin-reset-btn');
+    if (originResetBtn) {
+        originResetBtn.hidden = !state.locationKnown;
+    }
 }
 
+/**
+ * [함수 역할]
+ * 열려 있는 탐색 반경 설정 팝오버(`#radius-popover`)를 닫고, 필요 시 반경 버튼으로 키보드 포커스를 되돌립니다.
+ */
 function closeRadius(restoreFocus = false) {
     byId('radius-popover').hidden = true;
     byId('radius-button').setAttribute('aria-expanded', 'false');
@@ -567,6 +774,18 @@ function closeRadius(restoreFocus = false) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 탐색 반경 버튼 클릭, `<select id="radius">` 값 변경, 바깥 영역 클릭(Light Dismiss), `Escape` 닫기 이벤트를 초기화합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): 하단 `init()`에서 앱 시작 시 1회 호출
+ * - 이어지는 동작(Outgoing): 반경 값이 바뀌면 `updateRadiusUI()` → `fitRadius()`(지도 줌 조정) → `updateMarkers()`(반경 내 마커 재필터링) 순으로 실행됩니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 반경 선택 목록에 `'3 km'` 옵션을 추가하고 싶다면 `frontend/index.html`의 `<select id="radius">` 안에
+ *   `<option value="3">3 km</option>` 한 줄만 추가하면 이 함수가 자동으로 숫자로 읽어 반경 원과 마커 필터에 즉시 반영합니다!
+ */
 function initRadius() {
     const button = byId('radius-button');
     const panel = byId('radius-popover');
@@ -617,14 +836,25 @@ function initRadius() {
 }
 
 /* --------------------------------------------------------------------------
-   [7. 백엔드 Spring Boot API 연동 파이프라인 (요구사항 2, 13, 14 반영)]
+   [7. 백엔드 Spring Boot API 연동 파이프라인]
+   - 파이썬 장고(Django) 비유: 프론트엔드 JS가 `fetch('/api/hospitals')`를 호출하면
+     Django의 `urls.py` + `views.py`에 해당하는 `EmergencyApiController.getHospitals()`가 받아
+     `EmergencyDataService.getSnapshot()`(`services.py`) → `EmergencySnapshotDto`(`serializers.py`) JSON을 반환합니다.
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 중복 요청 방지(In-flight Deduplication)를 적용한 데이터 로드 진입점입니다.
+ * 동시에 여러 곳에서 새로고침을 눌러도 백엔드로 중복 요청이 날아가지 않도록
+ * 진행 중인 Promise(`state.inflight`)를 공유(In-flight Deduplication)하는 데이터 로드 진입점입니다.
  *
- * @param {boolean} [forceRefresh=false] 캐시를 무시하고 강제 새로고침할지 여부
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming):
+ *   1) `init()` 최초 앱 구동 시 `loadData(false)` (백엔드 메모리 캐시 스냅샷 즉시 조회)
+ *   2) `#refresh-button`('새로고침' 버튼) 클릭 시 `loadData(true)` (공공데이터 강제 재수집 요청)
+ *   3) `#developer-mode` 토글 열림 시 `loadData(false)`
+ * - 호출하는 함수(Outgoing): `fetchData(forceRefresh)`
+ *
+ * @param {boolean} [forceRefresh=false] 백엔드 캐시를 무시하고 강제 새로고침(`?refresh=true`)할지 여부
  * @returns {Promise<void>}
  */
 function loadData(forceRefresh = false) {
@@ -641,11 +871,26 @@ function loadData(forceRefresh = false) {
 
 /**
  * [함수 역할]
- * Java Spring Boot 백엔드(`GET /api/hospitals`)로부터 전국 응급의료기관 통합 스냅샷을 수신합니다.
+ * Java Spring Boot 백엔드(`GET /api/hospitals`)로부터 전국 응급의료기관 통합 스냅샷을 수신하여
+ * `state.hospitals`를 갱신하고 지도 마커·상세 시트·검색창·갱신 시각을 일괄 동기화합니다.
  *
- * [리팩토링 설명]
- * - 기존 브라우저에서 9개 XML 엔드포인트를 직접 호출하고 파싱하던 무거운 작업이
- *   Spring Boot 백엔드로 이관되어, 프론트엔드는 단일 JSON 응답만 받아 즉시 렌더링합니다.
+ * [코드의 경로성 (프론트엔드 → 백엔드 → 외부 공공데이터 API 전체 흐름)]
+ *   `app.js:fetchData()`
+ *   ──(GET /api/hospitals)──▶ `EmergencyApiController.java:getHospitals()`
+ *   ──▶ `EmergencyDataService.java:getSnapshot()`
+ *   ──▶ (캐시 만료 시) `NmcOpenApiClient.java` (국립중앙의료원 9개 XML 엔드포인트 병렬 수집)
+ *       + `HospitalClassifier.java` (권역응급·상급종합·의료원·일반기타 자동 분류)
+ *   ──▶ `EmergencySnapshotDto.java` JSON 직렬화 응답 반환!
+ *
+ * [적용된 Modern Web 성능 최적화]
+ * 1. `priority: 'low'` (배경 갱신 대역폭 양보): 이미 병원 목록이 로드된 뒤 백그라운드에서 재조회할 때는
+ *    네트워크 우선순위를 `'low'`로 낮춰 WebGL 지도 벡터 타일 다운로드와 경쟁하지 않게 합니다.
+ * 2. 사전 캐싱(`_vGroup`, `_latLng`) + 50ms 미만 청크 분할(`yieldToMain`):
+ *    500여 개 병원의 시각 그룹과 `LatLng` 인스턴스를 미리 계산하되, 45ms가 넘으면 메인 스레드에 양보합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 초기 로드 완료 후 열려 있는 병원 시트를 닫지 않고 그대로 최신 병상 수만 반영하도록 되어 있습니다(`openHospital(fresh, false)`).
+ *   만약 새로고침 때마다 시트 스크롤을 맨 위로 올리고 싶다면 `openHospital(fresh, true)`로 바꾸면 됩니다.
  *
  * @param {boolean} [forceRefresh=false] 강제 새로고침 여부 (`true`이면 `?refresh=true` 전달)
  */
@@ -658,15 +903,19 @@ async function fetchData(forceRefresh = false) {
     byId('developer-status').textContent = '실시간 정보 새로 수신 중...';
 
     state.controller?.abort();
-    state.controller = new AbortController();
+    const currentController = new AbortController();
+    state.controller = currentController;
 
     setStatus('정보 확인 중…');
 
     try {
         const endpointUrl = forceRefresh ? '/api/hospitals?refresh=true' : '/api/hospitals';
+        const isBackgroundRefresh = !forceRefresh && state.hospitals.length > 0;
+
         const response = await fetch(endpointUrl, {
-            signal: state.controller.signal,
+            signal: currentController.signal,
             cache: 'no-store',
+            priority: isBackgroundRefresh ? 'low' : 'high',
             headers: {
                 Accept: 'application/json'
             }
@@ -680,8 +929,31 @@ async function fetchData(forceRefresh = false) {
         }
 
         const snapshot = await response.json();
+        if (currentController.signal.aborted) {
+            return;
+        }
 
-        state.hospitals = Array.isArray(snapshot.hospitals) ? snapshot.hospitals : [];
+        const incomingHospitals = Array.isArray(snapshot.hospitals) ? snapshot.hospitals : [];
+        const canPrebuildLatLng = typeof naver !== 'undefined' && typeof naver.maps?.LatLng === 'function';
+        let chunkStart = performance.now();
+
+        for (let i = 0; i < incomingHospitals.length; i++) {
+            const hospital = incomingHospitals[i];
+            hospital._vGroup = hospital.regional ? 'regional' : hospital.type?.group;
+            if (canPrebuildLatLng && Number.isFinite(hospital.lat) && Number.isFinite(hospital.lng)) {
+                getHospitalLatLng(hospital);
+            }
+            // 50ms Long Task 경계를 넘기지 않도록 45ms마다 메인 스레드에 입력 처리 기회를 양보
+            if ((i & 63) === 63 && performance.now() - chunkStart >= 45) {
+                await yieldToMain();
+                if (currentController.signal.aborted) {
+                    return;
+                }
+                chunkStart = performance.now();
+            }
+        }
+
+        state.hospitals = incomingHospitals;
         state.sources = snapshot.sources || {
             list: true,
             basic: true,
@@ -734,24 +1006,30 @@ async function fetchData(forceRefresh = false) {
         setStatus(`조회 실패: ${error.message} · 이전 정보가 있다면 재확인하세요.`);
         byId('developer-status').textContent = `갱신 실패: ${error.message}`;
     } finally {
-        state.loading = false;
-        byId('refresh-button').disabled = false;
-        document.body.classList.remove('is-loading');
-        byId('developer-spinner').hidden = true;
+        if (state.controller === currentController) {
+            state.loading = false;
+            byId('refresh-button').disabled = false;
+            document.body.classList.remove('is-loading');
+            byId('developer-spinner').hidden = true;
+        }
     }
 }
 
 /* --------------------------------------------------------------------------
-   [8. 네이버 지도(NAVER Maps v3) GIS 연동 및 지리 연산 (요구사항 8 반영)]
+   [8. 네이버 지도(NAVER Maps v3 GL) GIS 연동 및 지리 연산]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 두 위경도 좌표 간의 구면 직선 거리(Haversine Formula)를 km 단위로 계산합니다.
+ * 지구 구체 위 두 위경도 좌표 간의 직선 거리(하버사인 공식, Haversine Formula)를 `km` 단위로 계산합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`, `resetOriginAndRoute()`, `populateWaypointSelect()`, `loadDirectionsForHospital()`, `openHospital()`
+ * - 참고: 백엔드 `NaverDirectionsService.java`의 `haversineKm()`과 동일한 지구 반지름(`6371 km`) 수식을 사용합니다.
  *
  * @param {{lat: number, lng: number}} a 시작점 좌표
  * @param {{lat: number, lng: number}} b 도착점 좌표
- * @returns {number} 직선 거리 (km)
+ * @returns {number} 두 지점 사이 직선 거리 (`km`)
  */
 function distanceKm(a, b) {
     const radians = degrees => degrees * Math.PI / 180;
@@ -769,13 +1047,12 @@ function distanceKm(a, b) {
 
 /**
  * [함수 역할]
- * 현재 네이버 지도 인스턴스(`state.map`)가 오버레이(`Circle`, `Polyline`, `OverlayView`) 및
- * 좌표 투영(`Projection`)을 처리할 준비가 완료되었는지 확인합니다.
+ * 현재 네이버 지도 인스턴스(`state.map`)의 WebGL 스타일 로드가 완료되어
+ * 도형 오버레이 및 화면 좌표 투영(`Projection`)을 안전하게 수행할 수 있는지 확인합니다.
  *
  * [동작 원리]
- * - 일반 2D 지도 모드(`renderMode !== 2`)에서는 인스턴스 생성 즉시 준비 완료(`true`) 상태입니다.
- * - GL 커스텀 다크 스타일 모드(`renderMode === 2`)에서는 비동기 스타일(`style.json`) 로드가 끝나
- *   `isGLReady()`가 `true`가 된 시점부터 투영(`mapbox.project`) 및 도형 매니저(`overlayManager`)가 활성화됩니다.
+ * - GL 벡터 모드(`renderMode === 2`)에서는 비동기 `style.json` 로드 완료(`isGLReady() === true`) 전에는
+ *   내부 Mapbox 투영기가 아직 준비되지 않으므로, 준비 완료 시점(`glReady` 이벤트) 이후에만 `true`를 반환합니다.
  */
 function isMapReadyForOverlays() {
     if (!state.map) {
@@ -793,16 +1070,25 @@ function isMapReadyForOverlays() {
 
 /**
  * [함수 역할]
- * 네이버 지도(`naver.maps.OverlayView`)를 상속하여 임의의 DOM 엘리먼트(병원 카드, 내 위치 마커)를
- * 특정 위경도 좌표 위에 렌더링하는 커스텀 오버레이 생성자입니다.
+ * 네이버 지도(`naver.maps.OverlayView`)를 상속하여 HTML DOM 엘리먼트(병원 카드 `.hospital-card`,
+ * 내 위치 점 `.location-marker`, 경유지 배지 `.waypoint-marker`)를 위경도 좌표 위에 띄우는 커스텀 오버레이입니다.
  *
- * [담당 기능]
- * - 기존 카카오맵의 `kakao.maps.CustomOverlay`를 네이버 지도 v3 방식으로 완벽히 대체합니다.
- * - `xAnchor`(기본 0.5), `yAnchor`(병원 카드는 1.0, 내 위치 점은 0.5) 비율에 맞춰
- *   CSS `transform: translate(...)`로 정확한 앵커 포인트를 맞춥니다.
+ * [Modern Web 성능 최적화 Phase 1 — GPU 컴포지터 `style.translate` 적용]
+ * - 기존 방식(`style.left` / `style.top`)은 지도를 드래그할 때마다 메인 스레드에서 Layout(리플로우) + Paint를 유발했습니다.
+ * - 개선 방식: `onAdd()`에서 `left: 0px; top: 0px;`로 레이아웃 원점을 고정하고,
+ *   `draw()`에서는 개별 CSS 속성 `style.translate = "Xpx Ypx"`만 갱신하여 **100% GPU 컴포지터 스레드**에서 60fps로 합성합니다!
+ * - 동시에 기존 `style.transform = translate(-50%, -100%)`(앵커 기준점 정렬)과 서로 덮어쓰지 않고 독립적으로 결합됩니다.
+ * - 구형 브라우저 호환성: `CAN_USE_CSS_TRANSLATE`가 `false`이면 자동으로 `left`/`top` 폴백 경로를 탑니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`(병원 카드), `updateLocationMarker()`(출발점 파란 점), `drawRouteOnMap()`(경유지 배지)
+ * - 짝을 이루는 CSS: `frontend/style.css`의 `.hospital-card { contain: layout style; translate: 0px; }`
+ *
+ * [수정 시 영향 및 예시]
+ * - 병원 카드가 좌표 점의 '정중앙'에 오도록 앵커를 바꾸고 싶다면 호출부의 `yAnchor: 1.0`(하단 중앙)을 `0.5`로 변경하세요.
  *
  * @param {Object} options 오버레이 옵션 (`position`, `content`, `map`, `xAnchor`, `yAnchor`, `zIndex`)
- * @returns {Object} 생성된 네이버 커스텀 오버레이(`naver.maps.OverlayView`) 인스턴스
+ * @returns {Object} 생성된 `NaverDomOverlay` 인스턴스 (`setPosition` 메서드 포함)
  */
 function createNaverDomOverlay(options) {
     class NaverDomOverlay extends naver.maps.OverlayView {
@@ -813,6 +1099,9 @@ function createNaverDomOverlay(options) {
             this.xAnchor = opts.xAnchor ?? 0.5;
             this.yAnchor = opts.yAnchor ?? 1.0;
             this.zIndex = opts.zIndex ?? 5;
+            this._lastTranslate = '';
+            this._lastLeft = '';
+            this._lastTop = '';
             if (opts.map) {
                 this.setMap(opts.map);
             }
@@ -825,9 +1114,19 @@ function createNaverDomOverlay(options) {
                 return;
             }
             this.content.style.position = 'absolute';
+            this.content.style.left = '0px';
+            this.content.style.top = '0px';
             this.content.style.zIndex = String(this.zIndex);
+            if (CAN_USE_CSS_TRANSLATE && !this._lastTranslate) {
+                this.content.style.translate = '0px 0px';
+            }
             this.content.style.transform = `translate(${-this.xAnchor * 100}%, ${-this.yAnchor * 100}%)`;
             targetPane.appendChild(this.content);
+        }
+
+        setPosition(nextPosition) {
+            this.position = nextPosition;
+            this.draw();
         }
 
         draw() {
@@ -841,8 +1140,26 @@ function createNaverDomOverlay(options) {
                 }
                 const offset = projection.fromCoordToOffset(this.position);
                 if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)) {
-                    this.content.style.left = `${Math.round(offset.x)}px`;
-                    this.content.style.top = `${Math.round(offset.y)}px`;
+                    const rx = Math.round(offset.x);
+                    const ry = Math.round(offset.y);
+                    if (CAN_USE_CSS_TRANSLATE) {
+                        const nextTranslate = `${rx}px ${ry}px`;
+                        if (this._lastTranslate !== nextTranslate) {
+                            this._lastTranslate = nextTranslate;
+                            this.content.style.translate = nextTranslate;
+                        }
+                    } else {
+                        const nextLeft = `${rx}px`;
+                        const nextTop = `${ry}px`;
+                        if (this._lastLeft !== nextLeft) {
+                            this._lastLeft = nextLeft;
+                            this.content.style.left = nextLeft;
+                        }
+                        if (this._lastTop !== nextTop) {
+                            this._lastTop = nextTop;
+                            this.content.style.top = nextTop;
+                        }
+                    }
                 }
             } catch {
                 // GL 비동기 스타일 초기화 직전 투영 예외 방어
@@ -861,9 +1178,11 @@ function createNaverDomOverlay(options) {
 
 /**
  * [함수 역할]
- * GL 도형 오버레이(`Circle`, `Polyline`)가 지도 이동(pan/zoom) 중 `_triggerRedraw()`에 의해
- * 매 프레임 동일한 GeoJSON 좌표를 WebWorker로 재전송(`updateGeojsonSource`)하며 깜빡이거나
- * Mapbox GL의 `idle` 이벤트를 무한 재호출하는 현상을 원천 차단합니다.
+ * 네이버 지도 기본 GL 도형 오버레이(`Circle`, 2D 폴백 `Polyline`)가 지도 이동 중 매 프레임 동일한 GeoJSON을
+ * WebWorker로 중복 전송하며 깜빡이거나 `idle` 무한 루프를 일으키는 현상을 차단합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateCircle()`, 그리고 `drawRouteOnMap()`의 비-GL 폴백 경로
  */
 function guardGlShapeRedraw(shapeOverlay) {
     if (!shapeOverlay || typeof shapeOverlay.drawGL !== 'function' || shapeOverlay._glRedrawGuarded) {
@@ -885,20 +1204,18 @@ function guardGlShapeRedraw(shapeOverlay) {
 
 /**
  * [함수 역할]
- * 네이버 지도 위에 현재 기준점(`state.origin`) 중심의 탐색 반경 원(`naver.maps.Circle`)을 그립니다.
+ * 현재 출발 기준점(`state.origin`)을 중심으로 탐색 반경 원(`naver.maps.Circle`)을 지도 위에 표시합니다.
  *
- * [깜빡임(Flicker) 원천 차단 설계]
- * - 네이버 지도 GL 모드(`gl: true`)에서 `naver.maps.Circle`은 내부 Mapbox GL의 GeoJSON Source/Layer로 등록됩니다.
- * - 만약 `idle` 이벤트마다 기존 `Circle`을 `setMap(null)`로 지우고 새로 생성하면,
- *   Mapbox GL이 Source 변경을 감지하여 리페인트 후 다시 `idle` 이벤트를 발생시키는 무한 루프(깜빡임)가 일어납니다.
- * - 이를 방지하기 위해 `(지도 인스턴스, 기준 위도, 기준 경도, 반경 값, 다크모드 여부)`를 조합한
- *   `state.circleKey`가 동일할 때는 기존 `Circle`을 절대 파괴·재생성하지 않고 즉시 반환(No-op)합니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`, `fitRadius()`, `locate()`, `setCustomOrigin()`, `resetOriginAndRoute()`, `mountNaverMap()`
+ * - 읽는 DOM 값: `frontend/index.html`의 `<select id="radius">`
  *
  * [수정 시 영향 및 예시]
- * - 반경 원의 테두리 색상을 파란색(`#2873df`)에서 초록색(`#03c75a`)으로 바꾸고 싶다면
- *   아래 `strokeColor`와 `fillColor` 속성값을 변경하면 됩니다.
+ * - 다크 모드에서 반경 원 테두리 색상을 하늘색(`#60a5fa`) 대신 에메랄드색(`#34d399`)으로 바꾸고 싶다면:
+ *   변경 전: strokeColor: state.darkMode ? '#60a5fa' : '#2873df',
+ *   변경 후: strokeColor: state.darkMode ? '#34d399' : '#2873df',
  *
- * @param {boolean} [force=false] 강제로 반경 원을 재생성할지 여부
+ * @param {boolean} [force=false] 캐시 키(`state.circleKey`)가 같아도 강제로 다시 그릴지 여부
  */
 function updateCircle(force = false) {
     if (!state.map || !isMapReadyForOverlays()) {
@@ -962,7 +1279,12 @@ function updateCircle(force = false) {
 
 /**
  * [함수 역할]
- * 사용자의 현재 GPS 위치(`state.origin`)에 파란색 맥동 마커(`.location-marker`)를 표시합니다.
+ * 내 GPS 위치 또는 우클릭으로 지정한 출발 기준점(`state.origin`)에 파란색 맥동 점(`.location-marker`)을 표시합니다.
+ * - `state.locationKnown === false`(예: '초기화' 버튼을 눌러 기본 상태로 돌아간 직후)이면 점을 깨끗이 제거합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `locate()`, `setCustomOrigin()`, `resetOriginAndRoute()`, `mountNaverMap()`
+ * - 짝을 이루는 CSS: `frontend/style.css`의 `.location-marker` 및 `.location-dot` (`@keyframes location-wave`)
  */
 function updateLocationMarker() {
     try {
@@ -993,7 +1315,18 @@ function updateLocationMarker() {
 
 /**
  * [함수 역할]
- * 브라우저 Geolocation API를 통해 사용자의 현재 GPS 위치를 측정하고 지도 중심과 반경을 갱신합니다.
+ * 브라우저 표준 `navigator.geolocation` API로 사용자의 현재 GPS 좌표를 측정하여
+ * 출발 기준점(`state.origin`)으로 설정하고 반경 원·마커·역지오코딩 주소·활성 경로를 자동 갱신합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `init()` 앱 최초 실행 시 1회, 그리고 `#location-button`('내 위치' 버튼) 클릭 시
+ * - 이어지는 호출(Outgoing): `updateRadiusUI()`, `updateLocationMarker()`, `updateOriginAddress()`(`GET /api/reverse-geocode`),
+ *   `updateMarkers()`, 그리고 활성 경로가 있으면 `refreshActiveRoute()`(`GET /api/directions`)까지 연쇄 갱신합니다!
+ *
+ * [수정 시 영향 및 예시]
+ * - 실내에서 GPS 수신 대기 제한 시간(`timeout`)을 10초(`10000`)에서 5초(`5000`)로 줄여 빠르게 폴백하고 싶다면:
+ *   변경 전: timeout: 10000,
+ *   변경 후: timeout: 5000,
  */
 function locate() {
     if (state.locating || !state.map) {
@@ -1044,6 +1377,18 @@ function locate() {
             if (state.etaRankOpen) {
                 loadEtaRanking();
             }
+            if (state.selected) {
+                const isSelectedActiveRoute = Boolean(
+                    state.activeRoute && state.activeRoute.hospital?.id === state.selected.id
+                );
+                populateWaypointSelect(state.selected);
+                loadDirectionsForHospital(state.selected, isSelectedActiveRoute, { fitMap: false });
+                if (state.activeRoute && !isSelectedActiveRoute) {
+                    refreshActiveRoute({ fitMap: false });
+                }
+            } else if (state.activeRoute) {
+                refreshActiveRoute({ fitMap: false });
+            }
             finish();
         },
         error => {
@@ -1071,8 +1416,18 @@ function locate() {
 
 /**
  * [함수 역할]
- * NCP Reverse Geocoding API(`GET /api/reverse-geocode`)를 호출하여
- * 현재 출발 기준 좌표(`state.origin`)의 도로명/행정동 주소를 조회하고 UI에 반영합니다.
+ * 백엔드 Reverse Geocoding API(`GET /api/reverse-geocode`)를 호출하여
+ * 현재 출발 기준 좌표(`state.origin`)의 행정동·도로명 주소를 조회하고 `#origin-address-text`에 표시합니다.
+ *
+ * [코드의 경로성]
+ *   `app.js:updateOriginAddress()`
+ *   ──(GET /api/reverse-geocode?lat=...&lng=...)──▶ `EmergencyApiController.java:getReverseGeocode()`
+ *   ──▶ `NaverDirectionsService.java:getReverseGeocode()`
+ *   ──▶ `ReverseGeocodeResponseDto.java` JSON 응답 → `updateRadiusUI()`로 화면 반영!
+ *
+ * [적용된 Modern Web 성능 최적화]
+ * - 주소 문자열은 부가 정보이므로 `priority: 'low'` 옵션을 부여해 병원 스냅샷(`GET /api/hospitals`) 및
+ *   WebGL 지도 타일 로딩을 절대 방해하지 않도록 네트워크 우선순위를 낮췄습니다.
  */
 async function updateOriginAddress() {
     state.reverseGeocodeController?.abort();
@@ -1085,6 +1440,7 @@ async function updateOriginAddress() {
         });
         const response = await fetch(`/api/reverse-geocode?${params.toString()}`, {
             signal: state.reverseGeocodeController.signal,
+            priority: 'low',
             headers: { Accept: 'application/json' }
         });
         if (!response.ok) {
@@ -1105,7 +1461,15 @@ async function updateOriginAddress() {
 
 /**
  * [함수 역할]
- * 지도 우클릭(모바일은 롱탭) 또는 주소 검색을 통해 임의의 위경도 좌표를 새로운 출발 기준점(`state.origin`)으로 설정합니다.
+ * 지도 우클릭(데스크톱 `rightclick`), 모바일 길게 누르기(`longtap`), 또는 주소 검색(`geocodeAndMoveOrigin`)을 통해
+ * 사용자가 지정한 임의의 위경도 좌표를 새로운 출발 기준점(`state.origin`)으로 설정합니다.
+ * 특히 **지도에 자동차 경로가 표시되어 있는 상태(`state.activeRoute !== null`)라면 새 출발점에서 목적지 병원까지
+ * 경로를 즉시 실시간 재탐색(`refreshActiveRoute`)하여 폴리라인과 상단 배너 시간을 갱신**합니다!
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `mountNaverMap()`의 `'rightclick'` / `'longtap'` 리스너, `geocodeAndMoveOrigin()`
+ * - 호출하는 함수(Outgoing): `updateRadiusUI()`, `updateLocationMarker()`, `updateCircle(true)`, `updateMarkers()`,
+ *   `updateOriginAddress()`, `loadEtaRanking()`, `loadDirectionsForHospital()`, `refreshActiveRoute()`
  *
  * @param {number} lat 위도
  * @param {number} lng 경도
@@ -1134,15 +1498,29 @@ function setCustomOrigin(lat, lng, customLabel = '지정 출발지') {
     }
 
     if (state.selected) {
-        loadDirectionsForHospital(state.selected, Boolean(state.routePolyline));
+        const isSelectedActiveRoute = Boolean(
+            state.activeRoute && state.activeRoute.hospital?.id === state.selected.id
+        );
+        populateWaypointSelect(state.selected);
+        loadDirectionsForHospital(state.selected, isSelectedActiveRoute, { fitMap: false });
+        if (state.activeRoute && !isSelectedActiveRoute) {
+            refreshActiveRoute({ fitMap: false });
+        }
+    } else if (state.activeRoute) {
+        refreshActiveRoute({ fitMap: false });
     }
 }
 
 /**
  * [함수 역할]
- * 네이버 지도 GL 커스텀 다크 스타일(`customStyleId: 4b12b380-f70c-4d42-85df-ecf7961ff041`)에서
- * 기본 스타일 JSON에 누락된 네이버 실시간 교통 벡터 타일 소스(`ctt`)와 6개 소통 라인 레이어를
- * 내부 Mapbox GL 인스턴스(`state.map.getMapbox()`)에 직접 주입하고 가시성(`visibility`)을 동기화합니다.
+ * 네이버 지도 GL 다크 스타일(`customStyleId`)처럼 기본 스타일 JSON에 실시간 교통 벡터 타일(`ctt`)이 빠져 있는 경우,
+ * 내부 Mapbox GL 인스턴스(`state.map.getMapbox()`)에 직접 교통 벡터 소스와 소통 색상 라인 레이어 6개를 주입·토글합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `syncTrafficLayer()` → `#traffic-toggle`('교통소통' 버튼)
+ *
+ * [수정 시 영향 및 예시]
+ * - 실시간 도로 정체 구간 선 색상을 `#ff3b30`에서 더 진한 자주색(`#e11d48`)으로 바꾸려면 `yonsei-ctt-4`의 `color`를 수정하세요.
  */
 function syncGlTrafficLayers(mapbox, visible) {
     if (!mapbox || typeof mapbox.getStyle !== 'function') {
@@ -1244,8 +1622,9 @@ function syncGlTrafficLayers(mapbox, visible) {
 
 /**
  * [함수 역할]
- * 네이버 지도 실시간 교통소통 레이어(`naver.maps.TrafficLayer` 및 GL 다크모드 `ctt` 벡터 레이어)를
- * 현재 상태(`state.trafficEnabled`)에 맞춰 동기화합니다.
+ * 네이버 지도 실시간 교통소통 레이어(`naver.maps.TrafficLayer` 및 GL `ctt` 벡터 레이어)를
+ * 현재 `state.trafficEnabled` 상태에 맞춰 활성화/비활성화합니다.
+ * - 다크/라이트 모드를 전환(`mountNaverMap`)하더라도 켜 두었던 교통소통 레이어가 그대로 자동 복원됩니다.
  */
 function syncTrafficLayer() {
     if (!state.map || typeof naver === 'undefined' || !naver.maps?.TrafficLayer) {
@@ -1288,7 +1667,7 @@ function syncTrafficLayer() {
 
 /**
  * [함수 역할]
- * 상단 `교통소통` 버튼(`#traffic-toggle`) 클릭 시 실시간 도로 소통 레이어를 ON/OFF 토글합니다.
+ * 도구 모음의 `교통소통` 버튼(`index.html`의 `#traffic-toggle`) 클릭 시 실시간 도로 소통 표시를 ON/OFF 전환합니다.
  */
 function toggleTrafficLayer() {
     state.trafficEnabled = !state.trafficEnabled;
@@ -1301,8 +1680,20 @@ function toggleTrafficLayer() {
 
 /**
  * [함수 역할]
- * 현재 출발 기준점(`state.origin`)에서 주변 후보 응급의료기관까지의 실도로 주행 소요시간(ETA)을
- * 백엔드(`GET /api/directions/rank`)를 통해 일괄 비교하고 최단시간 순으로 추천 목록을 렌더링합니다.
+ * 현재 출발 기준점(`state.origin`)에서 주변 후보 응급의료기관까지의 **실도로 주행 소요시간(ETA)**을
+ * 백엔드(`GET /api/directions/rank`)로 일괄 비교하여 최단시간 상위 병원 추천 목록(`#eta-rank-box`)을 렌더링합니다.
+ *
+ * [코드의 경로성]
+ *   `#eta-rank-btn` 클릭 (`init()` 리스너) / 출발지 변경 시 자동 갱신
+ *   ──▶ `app.js:loadEtaRanking()`
+ *   ──(GET /api/directions/rank)──▶ `EmergencyApiController.java:getEtaRanking()`
+ *   ──▶ `NaverDirectionsService.java:rankHospitalsByEta()` (직선거리 상위 후보 추출 후 네이버 Directions 병렬 호출)
+ *   ──▶ `List<HospitalEtaRankDto>` JSON 반환 → 추천 행 클릭 시 `openHospital()` + `loadDirectionsForHospital(..., true)` 실행!
+ *
+ * [수정 시 영향 및 예시]
+ * - 추천 병원 개수를 상위 5곳(`'5'`)에서 상위 8곳(`'8'`)으로 늘리고 싶다면:
+ *   변경 전: limit: '5',
+ *   변경 후: limit: '8', (백엔드 `rankHospitalsByEta`는 최대 10곳까지 허용합니다)
  */
 async function loadEtaRanking() {
     const box = byId('eta-rank-box');
@@ -1414,19 +1805,38 @@ async function loadEtaRanking() {
 }
 
 /* --------------------------------------------------------------------------
-   [9. 병원 지도 카드 렌더링 및 클러스터링]
+   [9. 병원 지도 카드 렌더링, O(N) 2D 공간 해시 클러스터링 & Key-Diffing 엔진]
    -------------------------------------------------------------------------- */
 
+/**
+ * [함수 역할]
+ * 병원의 시각적 색상 그룹 코드(`'regional'`, `'tertiary'`, `'medical'`, `'other'`)를 반환합니다.
+ * - `fetchData()`에서 미리 계산해 둔 `hospital._vGroup`이 있으면 즉시 반환합니다.
+ * - `frontend/style.css`의 `.hospital-card.regional`(빨강), `.tertiary`(주황), `.medical`(파랑), `.other`(초록) 클래스와 1:1 매칭됩니다.
+ */
 function visualGroup(hospital) {
-    return hospital.regional ? 'regional' : hospital.type.group;
+    return hospital._vGroup || (hospital.regional ? 'regional' : hospital.type.group);
 }
 
+/**
+ * [함수 역할]
+ * 상세 시트 상단 배지(`#hospital-type`)와 마커 툴팁에 표시할 기관 종별 한글 설명을 생성합니다.
+ */
 function hospitalLabel(hospital) {
     return hospital.regional
         ? `권역응급의료센터 · ${hospital.type.label}`
         : hospital.type.label;
 }
 
+/**
+ * [함수 역할]
+ * 검색 패널 하단 4개 필터 체크박스(`권역응급`, `상급종합`, `의료원`, `일반·기타`) 중
+ * 해당 병원이 표시 대상에 해당하는지 판별합니다.
+ *
+ * [도메인 규칙]
+ * - 상급종합병원이면서 동시에 권역응급의료센터인 병원(예: 세브란스병원, 고대안암병원 등)은
+ *   `권역응급` 또는 `상급종합` 둘 중 하나만 켜져 있어도 지도에 표시됩니다.
+ */
 function matchesFilters(hospital, enabled) {
     return Boolean(
         enabled[hospital.type.group] ||
@@ -1434,27 +1844,98 @@ function matchesFilters(hospital, enabled) {
     );
 }
 
+/**
+ * [함수 역할]
+ * 화면 픽셀 좌표가 겹치는 병원 카드들을 하나의 클러스터 그룹(`"주변 N개 병원"`)으로 묶습니다.
+ *
+ * [Modern Web 성능 최적화 Phase 2 — O(N^2) 전수 비교 → O(N) 2D 공간 해시 격자(Spatial Hash Grid)]
+ * - 기존 방식은 카드마다 기존 모든 그룹을 순회(`groups.find(...)`)하여 전국 보기 시 최대 수십만 번 비교했습니다.
+ * - 개선 방식: 화면을 `(CARD_WIDTH + 10) × (CARD_HEIGHT + 14)` 크기의 2D 격자 셀로 나누어 `Map`에 등록하고,
+ *   주변 `3 × 3 = 9`개 인접 셀만 조회합니다.
+ * - 특히 여러 후보가 겹칠 때 가장 먼저 생성된 그룹(`_idx` 최소값)을 선택하도록 구현하여,
+ *   기존 `groups.find()`와 **결과가 100% 수학적으로 동일**하면서도 시간 복잡도는 **$O(N)$**으로 단축되었습니다!
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`
+ *
+ * [수정 시 영향 및 예시]
+ * - 카드끼리 조금 더 가까이 붙어도 뭉치지 않게(개별 카드로 더 많이 보이게) 하고 싶다면 여백 숫자(`10`, `14`)를 줄이세요:
+ *   변경 전: const cellW = CARD_WIDTH + 10; const cellH = CARD_HEIGHT + 14;
+ *   변경 후: const cellW = CARD_WIDTH + 2;  const cellH = CARD_HEIGHT + 4;
+ *
+ * @param {Array<{x: number, y: number, hospital: Object}>} points 화면 픽셀 좌표가 부여된 병원 후보 목록
+ * @returns {Array<{x: number, y: number, hospital: Object, items: Array<Object>}>} 클러스터링된 카드 그룹 배열
+ */
 function groupCards(points) {
     const groups = [];
-    for (const point of points) {
-        const near = groups.find(group =>
-            Math.abs(group.x - point.x) < CARD_WIDTH + 10 &&
-            Math.abs(group.y - point.y) < CARD_HEIGHT + 14
-        );
+    const cellW = CARD_WIDTH + 10;
+    const cellH = CARD_HEIGHT + 14;
+    const grid = new Map();
 
-        if (near) {
-            near.items.push(point.hospital);
+    for (const point of points) {
+        const cx = Math.floor(point.x / cellW);
+        const cy = Math.floor(point.y / cellH);
+        let bestNear = null;
+
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const bucket = grid.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) {
+                    continue;
+                }
+                for (let i = 0; i < bucket.length; i++) {
+                    const candidate = bucket[i];
+                    if (
+                        Math.abs(candidate.x - point.x) < cellW &&
+                        Math.abs(candidate.y - point.y) < cellH &&
+                        (!bestNear || candidate._idx < bestNear._idx)
+                    ) {
+                        bestNear = candidate;
+                    }
+                }
+            }
+        }
+
+        if (bestNear) {
+            bestNear.items.push(point.hospital);
         } else {
-            groups.push({
+            const created = {
                 ...point,
-                items: [point.hospital]
-            });
+                items: [point.hospital],
+                _idx: groups.length
+            };
+            groups.push(created);
+
+            const cellKey = `${cx},${cy}`;
+            let bucket = grid.get(cellKey);
+            if (!bucket) {
+                bucket = [];
+                grid.set(cellKey, bucket);
+            }
+            bucket.push(created);
         }
     }
     return groups;
 }
 
+/**
+ * [함수 역할]
+ * 병원 마커 카드(`.hospital-card`) 위에 포인터/클릭 이벤트를 단 1회만 바인딩합니다.
+ * - 카드 위에서 지도를 드래그(`6px` 초과 이동)했을 때는 실수로 병원 상세창이 열리지 않도록 막고,
+ *   제자리 클릭일 때만 `card._onActivate()` 콜백을 실행합니다.
+ * - Key-Diffing으로 카드가 재사용될 때 이벤트 리스너가 중복 누적되지 않도록 `card._hospitalCardBound` 플래그로 보호합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`
+ * - 이어지는 동작(Outgoing): 클릭 확정 시 단일 병원이면 `openHospital()`, 겹침 클러스터이면 `openCluster()` 호출
+ */
 function bindHospitalCard(card, open) {
+    card._onActivate = open;
+    if (card._hospitalCardBound) {
+        return;
+    }
+    card._hospitalCardBound = true;
+
     let moved = false;
     let tracker = null;
 
@@ -1516,18 +1997,17 @@ function bindHospitalCard(card, open) {
             event.preventDefault();
             return;
         }
-        open();
+        card._onActivate?.();
     });
 }
 
 /**
  * [함수 역할]
- * 위경도 좌표를 화면 픽셀 좌표(`{x, y}`)로 변환합니다.
- * 네이버 지도 `Projection.fromCoordToOffset()`을 우선 사용하며,
- * 투영 객체가 아직 준비되지 않은 초기 프레임에서는 줌 레벨 기반 웹 메르카토르 픽셀 근사식을 사용합니다.
+ * 위경도 좌표를 네이버 지도 화면 픽셀 좌표(`{ x, y }`)로 투영합니다.
+ * - 캐싱된 `naver.maps.LatLng` 객체(`cachedLatLng`)를 전달받으면 불필요한 객체 생성을 생략합니다.
  */
-function coordToScreenPoint(lat, lng) {
-    const latLng = new naver.maps.LatLng(lat, lng);
+function coordToScreenPoint(lat, lng, cachedLatLng = null) {
+    const latLng = cachedLatLng || new naver.maps.LatLng(lat, lng);
     if (isMapReadyForOverlays()) {
         try {
             const projection = state.map.getProjection?.();
@@ -1551,9 +2031,19 @@ function coordToScreenPoint(lat, lng) {
 
 /**
  * [함수 역할]
- * 네이버 지도 위에 렌더링된 모든 병원 카드 커스텀 오버레이(`state.markers`)를 안전하게 제거하고 초기화합니다.
+ * 지도 위에 올려진 모든 병원 카드 오버레이(`state.markers` 및 `state.markerMap`)를 완전히 제거합니다.
+ * - 테마 전환(`mountNaverMap`)처럼 지도 인스턴스 자체가 교체될 때 호출됩니다.
  */
 function clearMarkers() {
+    for (const overlay of state.markerMap.values()) {
+        try {
+            overlay.setMap(null);
+        } catch {
+            // 오버레이 해제 중 예외 무시
+        }
+    }
+    state.markerMap.clear();
+
     for (const marker of state.markers) {
         try {
             marker.setMap(null);
@@ -1566,8 +2056,23 @@ function clearMarkers() {
 
 /**
  * [함수 역할]
- * 현재 지도 뷰포트 영역과 활성화된 필터(`권역응급`, `상급종합`, `의료원`, `일반·기타`) 및 탐색 반경에 맞춰
+ * 현재 지도 화면 범위(`viewport`), 활성화된 종별 체크박스 필터, 탐색 반경(`#radius`)에 맞는 병원을 추려
  * 네이버 지도 위에 병원 카드 오버레이를 렌더링합니다.
+ *
+ * [Modern Web 성능 최적화 Phase 2 — 3중 가속 파이프라인]
+ * 1. **초고속 위경도 사각 경계(BBox) 사전 필터링 + 거리 1회 선계산**:
+ *    화면 밖 병원을 먼저 걸러내고, 반경 사각 경계 밖 병원은 삼각함수(`distanceKm`) 호출 자체를 생략합니다.
+ *    또한 `.sort()` 비교 함수 내부에서 거리를 반복 재계산하지 않고 후보당 딱 1번만 계산합니다.
+ * 2. **$O(N)$ 2D 공간 해시 클러스터링(`groupCards`)**: 겹치는 카드를 선형 시간에 그룹화합니다.
+ * 3. **Key-Diffing DOM 재사용(`state.markerMap`)**:
+ *    기존에는 지도를 살짝만 움직여도(`idle`) 화면의 모든 `.hospital-card` DOM을 전부 삭제(`clearMarkers`)하고
+ *    새로 만들어 GC 스파이크와 깜빡임이 발생했습니다.
+ *    이제는 `single:{id}` / `cluster:{ids}` 고유 키를 비교해 **화면 밖으로 나간 카드만 제거하고,
+ *    유지되는 카드는 기존 DOM 엘리먼트를 그대로 재사용하여 좌표(`style.translate`)와 텍스트만 갱신**합니다!
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `mountNaverMap()`의 `'idle'` 이벤트, 필터 체크박스 변경, 반경 변경, `fetchData()`, `locate()`, `setCustomOrigin()`
+ * - 가리키는 DOM(Outgoing): `#map` 내부 오버레이 Pane 및 하단 안내 문구 `#map-count`
  */
 function updateMarkers() {
     if (!state.map) {
@@ -1587,10 +2092,11 @@ function updateMarkers() {
         return;
     }
 
-    clearMarkers();
     state.diagnostics.markersUpdatedCount += 1;
 
     const radius = byId('radius').value;
+    const numRadius = radius === 'all' ? null : Number(radius);
+    const radiusBox = numRadius !== null ? radiusExtent(state.origin, numRadius) : null;
     const enabled = {};
 
     for (const group of ['regional', 'tertiary', 'medical', 'other']) {
@@ -1611,102 +2117,180 @@ function updateMarkers() {
         other: 3
     };
 
-    const candidates = state.hospitals
-        .filter(hospital => {
-            const isSelected = Boolean(state.selected && hospital.id === state.selected.id);
-            if (!isSelected) {
-                if (!matchesFilters(hospital, enabled)) {
-                    return false;
-                }
-                if (radius !== 'all' && distanceKm(state.origin, hospital) > Number(radius)) {
-                    return false;
-                }
-            }
-            if (!viewport) {
-                return true;
-            }
-            const pos = new naver.maps.LatLng(hospital.lat, hospital.lng);
-            return typeof viewport.hasLatLng === 'function'
+    const candidateEntries = [];
+    for (let i = 0; i < state.hospitals.length; i++) {
+        const hospital = state.hospitals[i];
+        const isSelected = Boolean(state.selected && hospital.id === state.selected.id);
+
+        if (!isSelected && !matchesFilters(hospital, enabled)) {
+            continue;
+        }
+
+        const pos = getHospitalLatLng(hospital);
+        if (viewport) {
+            const inViewport = typeof viewport.hasLatLng === 'function'
                 ? viewport.hasLatLng(pos)
                 : viewport.hasPoint(pos);
-        })
-        .sort((a, b) =>
-            rank[visualGroup(a)] - rank[visualGroup(b)] ||
-            distanceKm(state.origin, a) - distanceKm(state.origin, b)
-        );
+            if (!inViewport) {
+                continue;
+            }
+        }
 
-    const points = candidates.map(hospital => {
-        const point = coordToScreenPoint(hospital.lat, hospital.lng);
-        return {
+        if (!isSelected && radiusBox) {
+            if (
+                hospital.lat < radiusBox.south - 0.005 ||
+                hospital.lat > radiusBox.north + 0.005 ||
+                hospital.lng < radiusBox.west - 0.005 ||
+                hospital.lng > radiusBox.east + 0.005
+            ) {
+                continue;
+            }
+        }
+
+        const dist = distanceKm(state.origin, hospital);
+        if (!isSelected && numRadius !== null && dist > numRadius) {
+            continue;
+        }
+
+        candidateEntries.push({
+            hospital,
+            pos,
+            rankVal: rank[visualGroup(hospital)] ?? 3,
+            dist
+        });
+    }
+
+    candidateEntries.sort((a, b) => (a.rankVal - b.rankVal) || (a.dist - b.dist));
+
+    const points = new Array(candidateEntries.length);
+    for (let i = 0; i < candidateEntries.length; i++) {
+        const { hospital, pos } = candidateEntries[i];
+        const point = coordToScreenPoint(hospital.lat, hospital.lng, pos);
+        points[i] = {
             x: point.x,
             y: point.y,
             hospital
         };
-    });
+    }
 
     const groups = groupCards(points);
+    const nextGroupByKey = new Map();
 
     for (const group of groups) {
+        const multiple = group.items.length > 1;
+        const key = multiple
+            ? `cluster:${group.items.map(item => item.id).join(',')}`
+            : `single:${group.items[0].id}`;
+        nextGroupByKey.set(key, group);
+    }
+
+    // 1단계: 현재 화면·필터에서 벗어난 마커만 선별 제거
+    for (const [key, existingOverlay] of state.markerMap.entries()) {
+        if (!nextGroupByKey.has(key) || existingOverlay.getMap() !== state.map) {
+            try {
+                existingOverlay.setMap(null);
+            } catch {
+                // 오버레이 해제 중 예외 무시
+            }
+            state.markerMap.delete(key);
+            state.diagnostics.markersRemovedCount += 1;
+        }
+    }
+
+    // 2단계: 기존 마커는 DOM을 재사용하여 속성·좌표만 갱신하고, 새로 진입한 마커만 생성
+    for (const [key, group] of nextGroupByKey.entries()) {
         const hospital = group.items[0];
         const multiple = group.items.length > 1;
+        const vGroup = visualGroup(hospital);
+        const nextClassName = `hospital-card ${vGroup}`;
 
-        const card = node('button', `hospital-card ${visualGroup(hospital)}`);
-        card.type = 'button';
-
-        card.title = multiple
+        const nextTitle = multiple
             ? group.items.map(item => item.name).join(' · ')
             : `${hospital.name} · ${hospitalLabel(hospital)}`;
 
-        card.setAttribute(
-            'aria-label',
-            multiple
-                ? `주변 ${group.items.length}개 병원 목록 열기`
-                : `${hospital.name} 상세 정보 열기`
-        );
+        const nextAriaLabel = multiple
+            ? `주변 ${group.items.length}개 병원 목록 열기`
+            : `${hospital.name} 상세 정보 열기`;
 
         const shortType = hospital.regional
             ? '권역응급'
             : hospital.type.label;
 
-        card.append(
-            node(
-                'strong',
-                '',
-                multiple ? `주변 ${group.items.length}개 병원` : hospital.name
-            ),
-            node(
-                'small',
-                '',
-                multiple
-                    ? '목록에서 병원 선택 ›'
-                    : `${shortType} · 응급실 ${bedValue(hospital.beds?.hvec)}`
-            )
-        );
+        const nextStrongText = multiple ? `주변 ${group.items.length}개 병원` : hospital.name;
+        const nextSmallText = multiple
+            ? '목록에서 병원 선택 ›'
+            : `${shortType} · 응급실 ${bedValue(hospital.beds?.hvec)}`;
 
-        bindHospitalCard(card, () => {
+        const activateHandler = () => {
             if (multiple) {
                 openCluster(group.items);
             } else {
                 openHospital(hospital);
             }
-        });
+        };
 
-        const overlay = createNaverDomOverlay({
-            map: state.map,
-            position: new naver.maps.LatLng(hospital.lat, hospital.lng),
-            content: card,
-            xAnchor: 0.5,
-            yAnchor: 1.0,
-            zIndex: 5
-        });
+        const targetPos = getHospitalLatLng(hospital);
+        const existingOverlay = state.markerMap.get(key);
 
-        state.markers.push(overlay);
+        if (existingOverlay && existingOverlay.content) {
+            const card = existingOverlay.content;
+            if (card.className !== nextClassName) {
+                card.className = nextClassName;
+            }
+            if (card.title !== nextTitle) {
+                card.title = nextTitle;
+            }
+            if (card.getAttribute('aria-label') !== nextAriaLabel) {
+                card.setAttribute('aria-label', nextAriaLabel);
+            }
+            if (card._strongEl && card._strongEl.textContent !== nextStrongText) {
+                card._strongEl.textContent = nextStrongText;
+            }
+            if (card._smallEl && card._smallEl.textContent !== nextSmallText) {
+                card._smallEl.textContent = nextSmallText;
+            }
+            card._onActivate = activateHandler;
+            existingOverlay.setPosition(targetPos);
+            state.diagnostics.markersReusedCount += 1;
+        } else {
+            const card = node('button', nextClassName);
+            card.type = 'button';
+            card.title = nextTitle;
+            card.setAttribute('aria-label', nextAriaLabel);
+
+            const strongEl = node('strong', '', nextStrongText);
+            const smallEl = node('small', '', nextSmallText);
+            card._strongEl = strongEl;
+            card._smallEl = smallEl;
+            card.append(strongEl, smallEl);
+
+            bindHospitalCard(card, activateHandler);
+
+            const overlay = createNaverDomOverlay({
+                map: state.map,
+                position: targetPos,
+                content: card,
+                xAnchor: 0.5,
+                yAnchor: 1.0,
+                zIndex: 5
+            });
+
+            state.markerMap.set(key, overlay);
+            state.diagnostics.markersCreatedCount += 1;
+        }
     }
 
+    state.markers = Array.from(state.markerMap.values());
+
     byId('map-count').textContent =
-        `현재 화면 ${candidates.length}개 기관 · 겹치는 카드는 묶어서 표시`;
+        `현재 화면 ${candidateEntries.length}개 기관 · 겹치는 카드는 묶어서 표시`;
 }
 
+/**
+ * [함수 역할]
+ * 겹쳐 있는 클러스터 카드(`"주변 N개 병원"`) 클릭 시 모달 다이얼로그(`index.html`의 `#cluster-dialog`)를 열어
+ * 묶여 있는 병원 목록을 보여주고 원하는 병원을 선택하거나 지도를 확대할 수 있게 합니다.
+ */
 function openCluster(items) {
     state.clusterItems = items;
     byId('cluster-title').textContent = `주변 ${items.length}개 병원`;
@@ -1736,36 +2320,33 @@ function openCluster(items) {
 }
 
 /* --------------------------------------------------------------------------
-   [10. 실시간 병원 검색 및 자동완성]
+   [10. 실시간 병원 검색, 카메라 포커싱 & 주소 지오코딩]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 검색창 등에서 특정 병원을 선택했을 때 지도의 중심 좌표(Center)와 줌 레벨(Zoom)을
- * 단일 원자적(Atomic) 카메라 트랜지션(`morph`)으로 이동시킵니다.
+ * 검색 결과나 최단시간 추천 목록에서 특정 병원을 선택했을 때,
+ * 지도의 중심 이동과 줌 레벨 변경을 단일 원자적 애니메이션(`morph`)으로 부드럽게 수행합니다.
  *
- * [버그 수정 배경 — 최초 검색 시 지도 미이동 현상 해결]
- * - 네이버 지도 WebGL 엔진(`maps-gl.js`)에서 `panTo(coord)` 직후 동기적으로 `setZoom(15)`를 호출하면,
- *   첫 번째 검색 시(현재 줌이 15가 아닐 때) `setZoom(15)` 내부의 `zoomBy()`가
- *   아직 `panTo`가 시작되기 전의 '이전 지도 중심점(`_mapModel.getCenterPixel()`)'을 기준으로
- *   `easeTo({ around: 이전중심점, zoom: 15 })`를 덮어써 버려 `panTo` 애니메이션이 취소됩니다.
- * - 반면 두 번째 검색 시에는 이미 줌이 15이므로 `setZoom(15)`가 `if (i === n) return false;`로 조기 종료되어
- *   `panTo`가 취소되지 않고 정상 이동했던 것입니다.
- * - 이를 해결하기 위해 중심 이동과 줌 변경을 하나의 `easeTo({ center, zoom })`로 결합 수행하는
- *   `state.map.morph(targetLatLng, targetZoom)`를 사용하여 첫 번째 검색부터 100% 정확히 이동시킵니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateSearch()` 검색 결과 클릭, `loadEtaRanking()` 추천 순위 클릭
  *
- * @param {Object} hospital 이동할 대상 병원 객체 (`lat`, `lng` 포함)
- * @param {number} [targetZoom=15] 이동 후 목표 줌 레벨
+ * [수정 시 영향 및 예시]
+ * - 병원 선택 시 확대되는 기본 줌 레벨을 `15`(동네 상세)에서 `16`(건물 단위)으로 더 가깝게 바꾸려면:
+ *   변경 전: function focusHospitalOnMap(hospital, targetZoom = 15)
+ *   변경 후: function focusHospitalOnMap(hospital, targetZoom = 16)
+ *
+ * @param {Object} hospital 이동할 대상 병원 객체
+ * @param {number} [targetZoom=15] 목표 지도 줌 레벨
  */
 function focusHospitalOnMap(hospital, targetZoom = 15) {
     if (!state.map || !hospital || !Number.isFinite(hospital.lat) || !Number.isFinite(hospital.lng)) {
         return;
     }
 
-    // 사용자가 명시적으로 병원을 검색·선택했으므로 초기 반경 자동 맞춤(fitRadius)이 덮어쓰지 않도록 고정
     state.hasFitted = true;
 
-    const targetLatLng = new naver.maps.LatLng(hospital.lat, hospital.lng);
+    const targetLatLng = getHospitalLatLng(hospital);
 
     if (state.map.get?.('renderMode') === 2 && !isMapReadyForOverlays()) {
         naver.maps.Event.once(state.map, 'glReady', () => {
@@ -1789,8 +2370,15 @@ function focusHospitalOnMap(hospital, targetZoom = 15) {
 
 /**
  * [함수 역할]
- * 검색창에 입력된 주소나 지역명을 백엔드 Geocoding API(`GET /api/geocode`)로 변환하여
- * 해당 좌표를 새로운 출발 기준점(`state.origin`)으로 설정하고 지도를 이동합니다.
+ * 검색창(`#keyword`)에 입력한 주소·역 이름·지역명(예: `'신촌역'`, `'원주시 흥업면'`)을
+ * 백엔드 Geocoding API(`GET /api/geocode`)로 변환해 출발 기준점(`state.origin`)을 이동시킵니다.
+ *
+ * [코드의 경로성]
+ *   `updateSearch()` 하단 `'... 주소·지역으로 출발 기준점 이동'` 버튼 클릭
+ *   ──▶ `app.js:geocodeAndMoveOrigin()`
+ *   ──(GET /api/geocode?query=...)──▶ `EmergencyApiController.java:getGeocode()`
+ *   ──▶ `NaverDirectionsService.java:getGeocode()` → `GeocodeResponseDto.java`
+ *   ──▶ `setCustomOrigin(targetLat, targetLng, label)`로 출발점·반경·경로 일괄 갱신!
  *
  * @param {string} rawQuery 검색할 주소 또는 지역명
  */
@@ -1845,6 +2433,16 @@ async function geocodeAndMoveOrigin(rawQuery) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 검색창(`index.html`의 `#keyword`) 입력값과 일치하는 병원명·주소를 실시간 자동완성 목록(`#search-results`)으로 보여줍니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `#keyword`의 `'input'` / `'focus'` 이벤트, `#search-form`의 `'submit'` 이벤트, `fetchData()`
+ *
+ * [수정 시 영향 및 예시]
+ * - 자동완성 최대 표시 개수를 25개(`.slice(0, 25)`)에서 15개로 줄이고 싶다면 `.slice(0, 15)`로 수정하세요.
+ */
 function updateSearch() {
     closeRadius();
 
@@ -1924,18 +2522,292 @@ function updateSearch() {
 }
 
 /* --------------------------------------------------------------------------
-   [11. 네이버 Directions 5 & Directions 15 자동차 경로 탐색 및 ETA (요구사항 10 반영)]
+   [11. 네이버 Directions 5 & 15 자동차 경로 탐색 및 단일 GeoJSON GL 레이어 엔진]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 지도 위에 그려진 네이버 자동차 경로 폴리라인(`routePolyline`, `routeOutlinePolyline`,
- * 구간별 혼잡도 폴리라인 `routeSectionPolylines`)과 상단 플로팅 배너(`#active-route-banner`)를 제거합니다.
+ * 현재 지도 위에 자동차 주행 경로가 렌더링되어 있는지(GL 단일 소스 또는 2D 폴백 폴리라인) 여부를 반환합니다.
  */
-function clearRouteOnMap() {
-    state.routePolyline?.setMap(null);
+function hasRenderedRoute() {
+    return Boolean(state.glRouteActive || state.routePolyline);
+}
+
+/**
+ * [함수 역할]
+ * 백엔드 `/api/directions` 응답(`data.path`, `data.sections`)을 단일 Mapbox GL GeoJSON `FeatureCollection`으로 변환합니다.
+ * - 기본 전체 경로(`role: 'base'`), 혼잡 구간(`role: 'section'`, `congestion: 2 | 3`),
+ *   출발점(`role: 'start'`), 도착점(`role: 'end'`)을 단 1개의 GeoJSON 데이터 구조 안에 모두 담습니다.
+ */
+function buildRouteGeoJson(data) {
+    const validPath = (data.path || []).filter(
+        pt => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])
+    );
+    if (validPath.length < 2) {
+        return { type: 'FeatureCollection', features: [] };
+    }
+
+    const features = [
+        {
+            type: 'Feature',
+            properties: { role: 'base' },
+            geometry: {
+                type: 'LineString',
+                coordinates: validPath
+            }
+        }
+    ];
+
+    if (Array.isArray(data.sections) && data.sections.length > 0) {
+        const congestedSections = data.sections
+            .filter(sec => sec.congestion === 2 || sec.congestion === 3)
+            .sort((a, b) => a.congestion - b.congestion);
+
+        for (const sec of congestedSections) {
+            const startIdx = Math.max(0, Number(sec.pointIndex) || 0);
+            const count = Math.max(0, Number(sec.pointCount) || 0);
+            const endIdx = Math.min(validPath.length - 1, startIdx + count);
+            if (endIdx <= startIdx) {
+                continue;
+            }
+            const segmentCoords = validPath.slice(startIdx, endIdx + 1);
+            if (segmentCoords.length < 2) {
+                continue;
+            }
+            features.push({
+                type: 'Feature',
+                properties: {
+                    role: 'section',
+                    congestion: sec.congestion
+                },
+                geometry: {
+                    type: 'LineString',
+                    coordinates: segmentCoords
+                }
+            });
+        }
+    }
+
+    features.push(
+        {
+            type: 'Feature',
+            properties: { role: 'start' },
+            geometry: {
+                type: 'Point',
+                coordinates: validPath[0]
+            }
+        },
+        {
+            type: 'Feature',
+            properties: { role: 'end' },
+            geometry: {
+                type: 'Point',
+                coordinates: validPath[validPath.length - 1]
+            }
+        }
+    );
+
+    return {
+        type: 'FeatureCollection',
+        features
+    };
+}
+
+/**
+ * [함수 역할]
+ * 네이버 GL 지도 내부 Mapbox 인스턴스(`state.map.getMapbox()`)에 **단 1개의 GeoJSON Source(`yonsei-route-source`)**와
+ * 소통 색상별 라인·출도착 포인트 레이어를 등록하고, 이후 경로 변경 시 `source.setData()`만 호출하여 `< 1ms` 내에 갱신합니다.
+ *
+ * [Modern Web 성능 최적화 Phase 2 — 다중 Polyline 생성·파괴 제거]
+ * - 기존 방식은 정체/서행 구간이 20개면 `naver.maps.Polyline` 객체 42개(테두리+본선)를 매번 생성해
+ *   내부적으로 42개의 개별 GeoJSON Source가 만들어지고 파괴되었습니다.
+ * - 개선 방식은 전체 경로 + 서행 + 정체 + 출도착점을 **단일 GeoJSON Source 1개**로 통합하여,
+ *   지도 우클릭으로 출발점을 연속 변경해도 레이어 재생성 없이 GPU 버퍼 데이터만 즉시 교체합니다!
+ *
+ * @param {Object} mapbox `state.map.getMapbox()` 인스턴스
+ * @param {Object} data `/api/directions` 응답 객체
+ * @returns {boolean} GL 단일 소스 렌더링 성공 여부 (`false`이면 2D `naver.maps.Polyline` 폴백 수행)
+ */
+function renderGlRoute(mapbox, data) {
+    if (!mapbox || typeof mapbox.getStyle !== 'function' || typeof mapbox.getSource !== 'function') {
+        return false;
+    }
+
+    const featureCollection = buildRouteGeoJson(data);
+    if (!featureCollection.features.length) {
+        return false;
+    }
+
+    const outlineColor = state.darkMode ? '#022c22' : '#064e3b';
+
+    try {
+        const existingSource = mapbox.getSource(GL_ROUTE_SOURCE_ID);
+        if (existingSource && typeof existingSource.setData === 'function') {
+            existingSource.setData(featureCollection);
+            if (mapbox.getLayer('yonsei-route-outline')) {
+                mapbox.setPaintProperty('yonsei-route-outline', 'line-color', outlineColor);
+            }
+            state.glRouteActive = true;
+            state.glRouteMap = state.map;
+            state.diagnostics.glRouteUpdateCount += 1;
+            return true;
+        }
+
+        mapbox.addSource(GL_ROUTE_SOURCE_ID, {
+            type: 'geojson',
+            data: featureCollection
+        });
+
+        const lineLayout = {
+            'line-cap': 'round',
+            'line-join': 'round'
+        };
+
+        const layerSpecs = [
+            {
+                id: 'yonsei-route-outline',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['==', 'role', 'base'],
+                layout: lineLayout,
+                paint: {
+                    'line-color': outlineColor,
+                    'line-width': 9,
+                    'line-opacity': 0.6
+                }
+            },
+            {
+                id: 'yonsei-route-base',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['==', 'role', 'base'],
+                layout: lineLayout,
+                paint: {
+                    'line-color': '#03c75a',
+                    'line-width': 5,
+                    'line-opacity': 0.95
+                }
+            },
+            {
+                id: 'yonsei-route-slow-outline',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['all', ['==', 'role', 'section'], ['==', 'congestion', 2]],
+                layout: lineLayout,
+                paint: {
+                    'line-color': '#78350f',
+                    'line-width': 9,
+                    'line-opacity': 0.65
+                }
+            },
+            {
+                id: 'yonsei-route-slow',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['all', ['==', 'role', 'section'], ['==', 'congestion', 2]],
+                layout: lineLayout,
+                paint: {
+                    'line-color': '#f59e0b',
+                    'line-width': 6,
+                    'line-opacity': 0.98
+                }
+            },
+            {
+                id: 'yonsei-route-jam-outline',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['all', ['==', 'role', 'section'], ['==', 'congestion', 3]],
+                layout: lineLayout,
+                paint: {
+                    'line-color': '#7f1d1d',
+                    'line-width': 9,
+                    'line-opacity': 0.65
+                }
+            },
+            {
+                id: 'yonsei-route-jam',
+                type: 'line',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['all', ['==', 'role', 'section'], ['==', 'congestion', 3]],
+                layout: lineLayout,
+                paint: {
+                    'line-color': '#ef4444',
+                    'line-width': 6,
+                    'line-opacity': 0.98
+                }
+            },
+            {
+                id: 'yonsei-route-start',
+                type: 'circle',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['==', 'role', 'start'],
+                paint: {
+                    'circle-radius': 5.5,
+                    'circle-color': '#ffffff',
+                    'circle-stroke-width': 3,
+                    'circle-stroke-color': '#03c75a'
+                }
+            },
+            {
+                id: 'yonsei-route-end',
+                type: 'circle',
+                source: GL_ROUTE_SOURCE_ID,
+                filter: ['==', 'role', 'end'],
+                paint: {
+                    'circle-radius': 6.5,
+                    'circle-color': '#ef4444',
+                    'circle-stroke-width': 2.5,
+                    'circle-stroke-color': '#ffffff'
+                }
+            }
+        ];
+
+        for (const spec of layerSpecs) {
+            if (!mapbox.getLayer(spec.id)) {
+                mapbox.addLayer(spec);
+            }
+        }
+
+        state.glRouteActive = true;
+        state.glRouteMap = state.map;
+        state.diagnostics.glRouteUpdateCount += 1;
+        return true;
+    } catch (err) {
+        console.warn('GL 단일 경로 소스 렌더링 실패 — 2D Polyline으로 폴백합니다:', err);
+        return false;
+    }
+}
+
+/**
+ * [함수 역할]
+ * 지도 위에 그려진 경로 도형(GL 단일 GeoJSON 소스 데이터, 2D 폴백 폴리라인, 경유지 마커)만 지도에서 비웁니다.
+ * - GL 소스가 이미 등록된 경우 레이어를 파괴하지 않고 빈 `FeatureCollection`만 `setData()`로 주입해 다음 경로 표시도 즉시 수행되게 합니다.
+ */
+function removeRouteOverlays() {
+    try {
+        const mapbox = state.map?.getMapbox?.();
+        const glSource = mapbox?.getSource?.(GL_ROUTE_SOURCE_ID);
+        if (glSource && typeof glSource.setData === 'function') {
+            glSource.setData({ type: 'FeatureCollection', features: [] });
+        }
+    } catch {
+        // GL 소스 비우기 중 예외 무시
+    }
+    state.glRouteActive = false;
+    state.glRouteMap = null;
+
+    try {
+        state.routePolyline?.setMap(null);
+    } catch {
+        // 폴리라인 해제 중 예외 무시
+    }
     state.routePolyline = null;
-    state.routeOutlinePolyline?.setMap(null);
+
+    try {
+        state.routeOutlinePolyline?.setMap(null);
+    } catch {
+        // 외곽선 폴리라인 해제 중 예외 무시
+    }
     state.routeOutlinePolyline = null;
 
     try {
@@ -1955,6 +2827,23 @@ function clearRouteOnMap() {
         }
     }
     state.routeSectionPolylines = [];
+}
+
+/**
+ * [함수 역할]
+ * 지도 위 자동차 경로와 상단 알약 배너(`#active-route-banner`)만 지웁니다.
+ * - 사용자가 우클릭하거나 GPS로 잡은 출발 기준점 점(`.location-marker`)은 그대로 유지됩니다!
+ * - 만약 출발 기준점 점과 경로를 **둘 다** 지우고 싶다면 아래 `resetOriginAndRoute()`가 호출됩니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): 상단 배너의 `'경로 지우기'`(`#active-route-clear`) 및 상세창의 `'경로 지우기'`(`#directions-clear-btn`)
+ */
+function clearRouteOnMap() {
+    state.activeRouteController?.abort();
+    state.activeRouteController = null;
+    state.activeRoute = null;
+
+    removeRouteOverlays();
 
     const banner = byId('active-route-banner');
     if (banner) {
@@ -1968,11 +2857,82 @@ function clearRouteOnMap() {
 
 /**
  * [함수 역할]
- * 네이버 Directions API의 실시간 혼잡도 코드(`congestion`: 1 원활, 2 서행, 3 정체)에 대응하는
- * 폴리라인 색상·외곽선 색상·한글 상태명을 반환합니다.
+ * 지도 위에 찍힌 출발 기준점 마커(우클릭 점·검색 지정 점·내 위치 점)와
+ * 표시 중인 자동차 주행 경로를 **모두 한 번에 삭제**하고 초기 상태(`DEFAULT_ORIGIN`)로 되돌립니다.
  *
- * @param {number} congestion 혼잡도 코드 (`0`: 정보없음, `1`: 원활, `2`: 서행, `3`: 정체)
- * @returns {{label: string, badgeClass: string, strokeColor: string, outlineColor: string, zIndex: number}}
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming):
+ *   1) 상단 활성 경로 배너 우측의 `'초기화'` 버튼(`index.html`의 `#active-route-reset`)
+ *   2) 하단 검색 패널 출발 기준 옆의 `'초기화'` 버튼(`index.html`의 `#origin-reset-btn`)
+ */
+function resetOriginAndRoute() {
+    state.directionsController?.abort();
+    state.activeRouteController?.abort();
+    state.reverseGeocodeController?.abort();
+
+    clearRouteOnMap();
+    state.sheetRouteData = null;
+
+    state.origin = {
+        lat: DEFAULT_ORIGIN.lat,
+        lng: DEFAULT_ORIGIN.lng
+    };
+    state.originLabel = DEFAULT_ORIGIN.label;
+    state.originAddress = '';
+    state.locationKnown = false;
+    state.locationAccuracy = null;
+    state.locationUpdated = null;
+
+    updateLocationMarker();
+    updateRadiusUI();
+
+    const radiusVal = byId('radius')?.value || '10';
+    let shouldFitResetOrigin = false;
+    if (state.map && radiusVal !== 'all') {
+        try {
+            const center = state.map.getCenter?.();
+            if (center && typeof center.lat === 'function' && typeof center.lng === 'function') {
+                const distFromDefault = distanceKm(
+                    { lat: center.lat(), lng: center.lng() },
+                    DEFAULT_ORIGIN
+                );
+                if (distFromDefault > Number(radiusVal) * 1.5) {
+                    shouldFitResetOrigin = true;
+                }
+            }
+        } catch {
+            // 중심 좌표 확인 중 예외 무시
+        }
+    }
+
+    if (shouldFitResetOrigin) {
+        fitRadius();
+    } else {
+        updateCircle(true);
+    }
+
+    updateMarkers();
+    updateOriginAddress();
+
+    if (state.etaRankOpen) {
+        loadEtaRanking();
+    }
+
+    if (state.selected) {
+        populateWaypointSelect(state.selected);
+        loadDirectionsForHospital(state.selected, false);
+    }
+
+    setStatus('지정 출발 위치 점과 경로를 모두 초기화했습니다.');
+}
+
+/**
+ * [함수 역할]
+ * 네이버 Directions API의 구간별 실시간 혼잡도 코드(`1`: 원활, `2`: 서행, `3`: 정체)에 맞는
+ * 색상·배지 클래스·한글 라벨을 반환합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 정체 구간 색상을 `#ef4444`에서 `#dc2626`으로 바꾸려면 아래 `congestion === 3`의 `strokeColor`(및 `renderGlRoute`의 `yonsei-route-jam`)를 변경하세요.
  */
 function getCongestionStyle(congestion) {
     if (congestion === 3) {
@@ -2004,67 +2964,152 @@ function getCongestionStyle(congestion) {
 
 /**
  * [함수 역할]
- * 네이버 Directions 5 / 15 API가 반환한 경로 좌표 배열(`data.path`)과 구간별 실시간 혼잡도(`data.sections`)를
- * 사용하여 네이버 지도(`state.map`) 위에 실시간 교통 소통 색상(원활: 초록 `#03c75a`, 서행: 주황 `#f59e0b`,
- * 정체: 빨강 `#ef4444`)이 반영된 다중 폴리라인을 그리고, 출발지와 도착 병원이 한눈에 보이도록 피팅합니다.
+ * 백엔드 `/api/directions`가 반환한 경로 데이터(`data`)를 받아 네이버 지도 위에 실시간 소통 색상 경로를 그리고,
+ * 상단 알약 모양 활성 경로 배너(`#active-route-banner`)를 표시합니다.
  *
- * [수정 시 영향 및 예시]
- * - 정체 구간 색상을 빨간색(`#ef4444`)에서 자주색(`#be123c`)으로 바꾸고 싶다면
- *   위 `getCongestionStyle(3)`의 `strokeColor` 값을 수정하면 됩니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming):
+ *   1) `#directions-draw-btn`('지도에 경로 표시' 버튼) 클릭 시
+ *   2) `loadDirectionsForHospital(..., true)` 자동 표시 시
+ *   3) `refreshActiveRoute()` (우클릭 출발점 변경 시 실시간 경로 갱신)
+ *   4) `mountNaverMap()` (다크/라이트 테마 전환 후 기존 경로 자동 복원)
+ * - 렌더링 경로(Outgoing): GL 지도에서는 `renderGlRoute()`(단일 GeoJSON 소스)를 우선 사용하고,
+ *   GL 미지원 환경에서만 2D `naver.maps.Polyline`으로 자동 폴백합니다.
  *
  * @param {Object} hospital 목적지 병원 객체
- * @param {Object} data `/api/directions` 응답 DTO 객체
+ * @param {Object} data `/api/directions` 응답 DTO 객체 (`DirectionsResponseDto`)
+ * @param {Object} [options={}] 렌더링 옵션 (`fitMap`, `apiType`, `option`, `rawWaypoint`)
  */
-function drawRouteOnMap(hospital, data) {
-    if (!state.map || !data || !Array.isArray(data.path) || !data.path.length) {
+function drawRouteOnMap(hospital, data, options = {}) {
+    if (!state.map || !hospital || !data || !Array.isArray(data.path) || !data.path.length) {
         return;
     }
 
     if (!isMapReadyForOverlays()) {
-        naver.maps.Event.once(state.map, 'glReady', () => drawRouteOnMap(hospital, data));
+        naver.maps.Event.once(state.map, 'glReady', () => drawRouteOnMap(hospital, data, options));
         return;
     }
 
-    clearRouteOnMap();
+    const fitMap = options.fitMap !== false;
+    const effectiveApiType = options.apiType || data.apiType || byId('directions-api')?.value || 'directions5';
+    const effectiveOption = options.option || data.option || state.selectedDirectionOption || 'trafast';
+    const effectiveRawWaypoint = options.rawWaypoint !== undefined
+        ? options.rawWaypoint
+        : (byId('directions-waypoint')?.value || '');
 
-    const latLngPath = data.path.map(([lng, lat]) => new naver.maps.LatLng(lat, lng));
-
-    // 1. 전체 경로 기본 외곽선 폴리라인 (지도 배경과 명확히 구분되도록 진한 테두리 역할)
-    state.routeOutlinePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
-        map: state.map,
-        path: latLngPath,
-        strokeColor: state.darkMode ? '#022c22' : '#064e3b',
-        strokeWeight: 9,
-        strokeOpacity: 0.55,
-        strokeLineCap: 'round',
-        strokeLineJoin: 'round',
-        zIndex: 90
-    }));
-
-    // 2. 전체 경로 기본 베이스 라인 (section 미포함 일반 도로 구간까지 끊김 없이 원활 그린으로 연결)
-    //    네이버 지도 PointingIcon(출발점 원형, 도착점 진행방향 화살표) 옵션 함께 적용
-    const polylineOpts = {
-        map: state.map,
-        path: latLngPath,
-        strokeColor: '#03c75a',
-        strokeWeight: 5,
-        strokeOpacity: 0.95,
-        strokeLineCap: 'round',
-        strokeLineJoin: 'round',
-        zIndex: 95
+    state.activeRoute = {
+        hospital,
+        data,
+        apiType: effectiveApiType,
+        option: effectiveOption,
+        rawWaypoint: effectiveRawWaypoint
     };
-    if (naver.maps?.PointingIcon) {
-        polylineOpts.startIcon = naver.maps.PointingIcon.CIRCLE;
-        polylineOpts.startIconSize = 10;
-        polylineOpts.endIcon = naver.maps.PointingIcon.BLOCK_ARROW;
-        polylineOpts.endIconSize = 14;
+
+    const mapbox = state.map.getMapbox?.();
+    let renderedViaGl = false;
+
+    if (mapbox) {
+        // 기존 2D 폴백 폴리라인이나 이전 경유지 배지가 남아 있으면 먼저 정리
+        if (state.routePolyline || state.routeOutlinePolyline || state.routeSectionPolylines.length || state.waypointMarker) {
+            removeRouteOverlays();
+        }
+        renderedViaGl = renderGlRoute(mapbox, data);
     }
-    state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline(polylineOpts));
+
+    if (!renderedViaGl) {
+        removeRouteOverlays();
+
+        const latLngPath = data.path.map(([lng, lat]) => new naver.maps.LatLng(lat, lng));
+
+        // 1. 2D 폴백용 전체 경로 기본 외곽선 폴리라인
+        state.routeOutlinePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
+            map: state.map,
+            path: latLngPath,
+            strokeColor: state.darkMode ? '#022c22' : '#064e3b',
+            strokeWeight: 9,
+            strokeOpacity: 0.55,
+            strokeLineCap: 'round',
+            strokeLineJoin: 'round',
+            zIndex: 90
+        }));
+
+        // 2. 2D 폴백용 전체 경로 기본 베이스 라인
+        const polylineOpts = {
+            map: state.map,
+            path: latLngPath,
+            strokeColor: '#03c75a',
+            strokeWeight: 5,
+            strokeOpacity: 0.95,
+            strokeLineCap: 'round',
+            strokeLineJoin: 'round',
+            zIndex: 95
+        };
+        if (naver.maps?.PointingIcon) {
+            polylineOpts.startIcon = naver.maps.PointingIcon.CIRCLE;
+            polylineOpts.startIconSize = 10;
+            polylineOpts.endIcon = naver.maps.PointingIcon.BLOCK_ARROW;
+            polylineOpts.endIconSize = 14;
+        }
+        state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline(polylineOpts));
+
+        // 3. 2D 폴백용 구간별 혼잡도 폴리라인
+        if (Array.isArray(data.sections) && data.sections.length > 0) {
+            const congestedSections = data.sections
+                .filter(sec => sec.congestion === 2 || sec.congestion === 3)
+                .sort((a, b) => a.congestion - b.congestion);
+
+            for (const sec of congestedSections) {
+                const startIdx = Math.max(0, Number(sec.pointIndex) || 0);
+                const count = Math.max(0, Number(sec.pointCount) || 0);
+                const endIdx = Math.min(latLngPath.length - 1, startIdx + count);
+                if (endIdx <= startIdx) {
+                    continue;
+                }
+
+                const segmentCoords = latLngPath.slice(startIdx, endIdx + 1);
+                if (segmentCoords.length < 2) {
+                    continue;
+                }
+
+                const style = getCongestionStyle(sec.congestion);
+
+                const segOutline = guardGlShapeRedraw(new naver.maps.Polyline({
+                    map: state.map,
+                    path: segmentCoords,
+                    strokeColor: style.outlineColor,
+                    strokeWeight: 9,
+                    strokeOpacity: 0.65,
+                    strokeLineCap: 'round',
+                    strokeLineJoin: 'round',
+                    zIndex: style.zIndex - 1
+                }));
+
+                const segLine = guardGlShapeRedraw(new naver.maps.Polyline({
+                    map: state.map,
+                    path: segmentCoords,
+                    strokeColor: style.strokeColor,
+                    strokeWeight: 6,
+                    strokeOpacity: 0.98,
+                    strokeLineCap: 'round',
+                    strokeLineJoin: 'round',
+                    zIndex: style.zIndex
+                }));
+
+                state.routeSectionPolylines.push(segOutline, segLine);
+            }
+        }
+    }
 
     // 경유지(Waypoint)가 선택되어 있는 경우 지도 위에 경유지 배지 표시
-    const rawWaypoint = byId('directions-waypoint')?.value || '';
-    if (rawWaypoint.includes('|')) {
-        const [coordPart, wpName] = rawWaypoint.split('|');
+    try {
+        state.waypointMarker?.setMap(null);
+    } catch {
+        // 무시
+    }
+    state.waypointMarker = null;
+
+    if (effectiveRawWaypoint.includes('|')) {
+        const [coordPart, wpName] = effectiveRawWaypoint.split('|');
         const [wpLngStr, wpLatStr] = coordPart.split(',');
         const wpLat = Number(wpLatStr);
         const wpLng = Number(wpLngStr);
@@ -2081,58 +3126,15 @@ function drawRouteOnMap(hospital, data) {
         }
     }
 
-    // 3. 구간별 실시간 혼잡도(data.sections: 서행 2 -> 정체 3 순서로 레이어링하여 정체 빨간색이 최상단에 표시되도록 함)
-    if (Array.isArray(data.sections) && data.sections.length > 0) {
-        const congestedSections = data.sections
-            .filter(sec => sec.congestion === 2 || sec.congestion === 3)
-            .sort((a, b) => a.congestion - b.congestion);
-
-        for (const sec of congestedSections) {
-            const startIdx = Math.max(0, Number(sec.pointIndex) || 0);
-            const count = Math.max(0, Number(sec.pointCount) || 0);
-            const endIdx = Math.min(latLngPath.length - 1, startIdx + count);
-            if (endIdx <= startIdx) {
-                continue;
-            }
-
-            const segmentCoords = latLngPath.slice(startIdx, endIdx + 1);
-            if (segmentCoords.length < 2) {
-                continue;
-            }
-
-            const style = getCongestionStyle(sec.congestion);
-
-            const segOutline = guardGlShapeRedraw(new naver.maps.Polyline({
-                map: state.map,
-                path: segmentCoords,
-                strokeColor: style.outlineColor,
-                strokeWeight: 9,
-                strokeOpacity: 0.65,
-                strokeLineCap: 'round',
-                strokeLineJoin: 'round',
-                zIndex: style.zIndex - 1
-            }));
-
-            const segLine = guardGlShapeRedraw(new naver.maps.Polyline({
-                map: state.map,
-                path: segmentCoords,
-                strokeColor: style.strokeColor,
-                strokeWeight: 6,
-                strokeOpacity: 0.98,
-                strokeLineCap: 'round',
-                strokeLineJoin: 'round',
-                zIndex: style.zIndex
-            }));
-
-            state.routeSectionPolylines.push(segOutline, segLine);
-        }
-    }
-
-    // 4. 상단 플로팅 활성 경로 배너 표시
+    // 상단 플로팅 활성 경로 배너(`index.html`의 `#active-route-banner`) 텍스트 갱신 및 노출
     const banner = byId('active-route-banner');
     if (banner) {
+        const nameEl = byId('active-route-name');
         byId('active-route-api').textContent = data.apiLabel || 'Directions 5';
-        byId('active-route-name').textContent = `${hospital.name}`;
+        if (nameEl) {
+            nameEl.textContent = `${hospital.name}`;
+            nameEl.title = `${hospital.name}`;
+        }
         byId('active-route-meta').textContent = `${data.durationText} · ${data.distanceKm} km`;
         banner.hidden = false;
     }
@@ -2142,21 +3144,135 @@ function drawRouteOnMap(hospital, data) {
         clearBtn.hidden = false;
     }
 
-    // 5. 경로 전체가 보이도록 지도 영역 피팅
-    const bounds = new naver.maps.LatLngBounds(latLngPath[0], latLngPath[0]);
-    for (const pt of latLngPath) {
-        bounds.extend(pt);
+    // 최초 경로 표시 시 경로 전체가 화면 안에 들어오도록 지도 영역 피팅 (우클릭 실시간 갱신 시에는 카메라 고정)
+    if (fitMap) {
+        const firstCoord = data.path[0];
+        const firstLatLng = new naver.maps.LatLng(firstCoord[1], firstCoord[0]);
+        const bounds = new naver.maps.LatLngBounds(firstLatLng, firstLatLng);
+        for (let i = 1; i < data.path.length; i++) {
+            const [lng, lat] = data.path[i];
+            bounds.extend(new naver.maps.LatLng(lat, lng));
+        }
+        fitBounds(bounds);
     }
-    fitBounds(bounds);
 }
 
 /**
  * [함수 역할]
- * 현재 선택된 목적지 병원(`destinationHospital`)을 제외한 주변 응급의료기관들을
- * 출발 기준점(`state.origin`)과의 직선거리 순으로 정렬하여
- * 경유지 선택 드롭다운(`#directions-waypoint`) 옵션을 구성합니다.
+ * 지도 위에 자동차 경로가 표시된 상태에서 사용자가 다른 지점을 우클릭(또는 롱탭·내 위치 측정)했을 때,
+ * 새로운 출발점(`state.origin`)에서 목적지 병원까지의 경로를 백엔드(`GET /api/directions`)로 즉시 재조회하여
+ * 단일 GeoJSON 소스(`yonsei-route-source`)와 상단 알약 배너를 실시간 갱신합니다.
  *
- * @param {Object} destinationHospital 최종 목적지 병원 객체
+ * [코드의 경로성]
+ *   지도 우클릭 (`mountNaverMap`) → `setCustomOrigin()` → `refreshActiveRoute()`
+ *   ──(GET /api/directions)──▶ `EmergencyApiController.java:getDirections()`
+ *   ──▶ `NaverDirectionsService.java:getDrivingRoute()` → `DirectionsResponseDto.java`
+ *   ──▶ `drawRouteOnMap()` → `renderGlRoute()` (`source.setData()`로 즉시 경로선 교체!)
+ *
+ * @param {Object} [options={}] 갱신 옵션 (`fitMap`)
+ */
+async function refreshActiveRoute(options = {}) {
+    const active = state.activeRoute;
+    if (!active?.hospital) {
+        return;
+    }
+
+    const hospital = active.hospital;
+    const fitMap = Boolean(options.fitMap);
+    const apiType = active.apiType || byId('directions-api')?.value || 'directions5';
+    const option = active.option || state.selectedDirectionOption || 'trafast';
+    const rawWaypoint = active.rawWaypoint || '';
+    const [waypointCoord] = rawWaypoint.includes('|')
+        ? rawWaypoint.split('|')
+        : [rawWaypoint];
+
+    state.activeRouteController?.abort();
+    const controller = new AbortController();
+    state.activeRouteController = controller;
+
+    const banner = byId('active-route-banner');
+    const metaEl = byId('active-route-meta');
+    if (banner && !banner.hidden && metaEl) {
+        metaEl.textContent = '경로 갱신 중…';
+    }
+
+    try {
+        const params = new URLSearchParams({
+            startLat: String(state.origin.lat),
+            startLng: String(state.origin.lng),
+            goalLat: String(hospital.lat),
+            goalLng: String(hospital.lng),
+            apiType,
+            option
+        });
+        if (waypointCoord) {
+            params.set('waypoints', waypointCoord);
+        }
+
+        const response = await fetch(`/api/directions?${params.toString()}`, {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' }
+        });
+
+        if (controller.signal.aborted || state.activeRoute?.hospital?.id !== hospital.id) {
+            return;
+        }
+
+        if (!response.ok) {
+            if (metaEl) {
+                metaEl.textContent = `경로 갱신 실패 (HTTP ${response.status})`;
+            }
+            return;
+        }
+
+        const data = await response.json();
+        if (controller.signal.aborted || state.activeRoute?.hospital?.id !== hospital.id) {
+            return;
+        }
+
+        if (data.code !== 0 || !Array.isArray(data.path) || !data.path.length) {
+            removeRouteOverlays();
+            if (banner) {
+                const nameEl = byId('active-route-name');
+                if (nameEl) {
+                    nameEl.textContent = `${hospital.name}`;
+                }
+                if (metaEl) {
+                    metaEl.textContent = '해당 위치에서 도로 경로 탐색 불가';
+                }
+                banner.hidden = false;
+            }
+            return;
+        }
+
+        drawRouteOnMap(hospital, data, {
+            fitMap,
+            apiType,
+            option,
+            rawWaypoint
+        });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            return;
+        }
+        if (metaEl && state.activeRoute?.hospital?.id === hospital.id) {
+            metaEl.textContent = '경로 갱신 오류';
+        }
+    } finally {
+        if (state.activeRouteController === controller) {
+            state.activeRouteController = null;
+        }
+    }
+}
+
+/**
+ * [함수 역할]
+ * 최종 목적지 병원(`destinationHospital`)을 제외한 주변 응급의료기관 15곳을 출발 기준점 직선거리 순으로 정렬해
+ * 상세 시트 내 경유지 드롭다운(`index.html`의 `#directions-waypoint`) 옵션을 채웁니다.
+ *
+ * [도메인 규칙 반영]
+ * - `hospital.beds.hvec` 문자열을 `integerValue()` 및 `bedValue()`로 파싱하여
+ *   음수 병상(`< 0`)일 때도 `'초과수용 N석'`으로 정확히 표시합니다.
  */
 function populateWaypointSelect(destinationHospital) {
     const select = byId('directions-waypoint');
@@ -2186,10 +3302,11 @@ function populateWaypointSelect(destinationHospital) {
     for (const { hospital, dist } of nearby) {
         const opt = document.createElement('option');
         opt.value = `${hospital.lng},${hospital.lat}|${hospital.name}`;
-        const erAvail = hospital.beds?.hvec?.available;
-        const shortEr = typeof erAvail === 'number'
-            ? (erAvail > 0 ? `응급실 ${erAvail}석` : `응급실 포화(${erAvail})`)
-            : '응급실 확인필요';
+        const erRaw = hospital.beds?.hvec;
+        const erNum = integerValue(erRaw);
+        const shortEr = erNum !== null
+            ? (erNum > 0 ? `응급실 ${erNum}석` : `응급실 ${bedValue(erRaw)}`)
+            : '응급실 미정보';
         opt.textContent = `경유: ${hospital.name} (${dist.toFixed(1)}km · ${shortEr})`;
         select.append(opt);
     }
@@ -2203,14 +3320,22 @@ function populateWaypointSelect(destinationHospital) {
 
 /**
  * [함수 역할]
- * 백엔드 `/api/directions` 엔드포인트를 호출하여 현재 기준 위치(`state.origin`)에서
- * 선택된 병원(`hospital`)까지의 네이버 **Directions 5** 또는 **Directions 15**
- * 자동차 주행 경로 및 예상 소요 시간(ETA)을 조회하고 바텀시트에 렌더링합니다.
+ * 병원 상세창(`#sheet`)이 열릴 때 백엔드 `GET /api/directions`를 호출하여
+ * 현재 출발 기준점(`state.origin`)에서 해당 병원까지의 **Directions 5 / Directions 15** 자동차 주행 시간(ETA),
+ * 4대 경로 대안 비교(`실시간 빠른길 / 최적 / 편한길 / 무료 우선`), 예상 요금, 혼잡 구간 칩, 턴바이턴 안내를 렌더링합니다.
+ *
+ * [코드의 경로성]
+ *   `openHospital()` / `#directions-api` 변경 / `#directions-waypoint` 변경 / `#directions-draw-btn` 클릭
+ *   ──▶ `app.js:loadDirectionsForHospital()`
+ *   ──(GET /api/directions)──▶ `EmergencyApiController.java:getDirections()`
+ *   ──▶ `NaverDirectionsService.java:getDrivingRoute()` → `DirectionsResponseDto.java`
+ *   ──▶ 상세 시트 `#directions-result` 렌더링 (+ `autoDraw === true`이면 `drawRouteOnMap()` 실행)
  *
  * @param {Object} hospital 목적지 병원 객체
- * @param {boolean} [autoDraw=false] 조회 완료 즉시 지도 위에 폴리라인을 그릴지 여부
+ * @param {boolean} [autoDraw=false] 조회 완료 즉시 지도 위에 경로를 그릴지 여부
+ * @param {Object} [drawOptions={}] `autoDraw` 시 `drawRouteOnMap`에 전달할 옵션 (`fitMap`)
  */
-async function loadDirectionsForHospital(hospital, autoDraw = false) {
+async function loadDirectionsForHospital(hospital, autoDraw = false, drawOptions = {}) {
     const container = byId('directions-result');
     const statusBadge = byId('directions-status-badge');
     if (!container || !hospital) {
@@ -2224,8 +3349,10 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         ? rawWaypoint.split('|')
         : [rawWaypoint, ''];
 
+    state.sheetRouteData = null;
     state.directionsController?.abort();
-    state.directionsController = new AbortController();
+    const controller = new AbortController();
+    state.directionsController = controller;
 
     if (statusBadge) {
         statusBadge.textContent = '경로 탐색 중…';
@@ -2248,9 +3375,13 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         }
 
         const response = await fetch(`/api/directions?${params.toString()}`, {
-            signal: state.directionsController.signal,
+            signal: controller.signal,
             headers: { Accept: 'application/json' }
         });
+
+        if (controller.signal.aborted) {
+            return;
+        }
 
         if (!response.ok) {
             if (statusBadge) {
@@ -2263,7 +3394,13 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         }
 
         const data = await response.json();
-        state.activeRouteData = data;
+        if (controller.signal.aborted) {
+            return;
+        }
+
+        if (!state.selected || state.selected.id === hospital.id) {
+            state.sheetRouteData = data;
+        }
 
         if (data.code !== 0) {
             if (statusBadge) {
@@ -2314,7 +3451,10 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
                 altBtn.addEventListener('click', () => {
                     if (state.selectedDirectionOption !== alt.option) {
                         state.selectedDirectionOption = alt.option;
-                        loadDirectionsForHospital(hospital, Boolean(state.routePolyline));
+                        const isSelectedActive = Boolean(
+                            state.activeRoute && state.activeRoute.hospital?.id === hospital.id
+                        );
+                        loadDirectionsForHospital(hospital, isSelectedActive, { fitMap: false });
                     }
                 });
                 altWrap.append(altBtn);
@@ -2378,7 +3518,6 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         if (Array.isArray(data.sections) && data.sections.length > 0) {
             const chipWrap = node('div', 'directions-section-chips');
             const seenKeys = new Set();
-            // 정체(3)·서행(2) 구간은 모두 우선 포함하고, 원활(1) 구간은 주요 도로 위주로 선별 후 주행 순서대로 정렬
             const prioritized = [...data.sections]
                 .filter(sec => {
                     const key = `${sec.name}|${sec.congestion}`;
@@ -2423,7 +3562,12 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         }
 
         if (autoDraw) {
-            drawRouteOnMap(hospital, data);
+            drawRouteOnMap(hospital, data, {
+                fitMap: drawOptions.fitMap !== false,
+                apiType,
+                option,
+                rawWaypoint
+            });
         }
     } catch (error) {
         if (error.name === 'AbortError') {
@@ -2439,9 +3583,21 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
 }
 
 /* --------------------------------------------------------------------------
-   [12. API 시각 파싱 및 실시간 진료 공지 렌더링]
+   [12. API 시각 파싱 및 실시간 진료 공지 렌더링 (`index.html` #messages 연동)]
    -------------------------------------------------------------------------- */
 
+/**
+ * [함수 역할]
+ * 국립중앙의료원 OpenAPI가 반환하는 14자리 시각 문자열(`YYYYMMDDHHmmss`, 한국 표준시 기준)을
+ * JavaScript 타임스탬프와 읽기 쉬운 날짜/시각(`"11월 10일 02:30"`) 객체로 변환합니다.
+ *
+ * [코드의 경로성]
+ * - 데이터 출처: 백엔드 `NmcOpenApiClient.java` → `HospitalDto.messages` / `HospitalDto.beds.hvidate` / `HospitalDto.severe.hvidate`
+ * - 호출하는 곳(Incoming): `renderMessages()`, `renderSevere()`, `renderBeds()`
+ *
+ * @param {string} value 14자리 숫자 문자열 (`YYYYMMDDHHmmss`)
+ * @returns {{timestamp: number, display: string}|null} 파싱 결과 또는 형식이 다르면 `null`
+ */
 function parseApiDate(value) {
     if (!/^\d{14}$/.test(value || '')) {
         return null;
@@ -2469,6 +3625,19 @@ function parseApiDate(value) {
     };
 }
 
+/**
+ * [함수 역할]
+ * 선택된 병원의 실시간 응급실·중증질환 진료 제한 공지(`hospital.messages`) 중
+ * 현재 시각 기준 유효한 공지만 필터링하고 `[중증]` 공지를 최상단에 정렬하여 `#messages` 영역에 렌더링합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `openHospital()`
+ * - 데이터 출처: 백엔드 `EmergencyDataService.java`가 병합한 `HospitalDto.messages` (`getEmrrmSrsillDissMsgInqire` XML 원본)
+ * - 가리키는 DOM(Outgoing): `frontend/index.html`의 `#messages` 및 `#message-count`
+ *
+ * [수정 시 영향 및 예시]
+ * - 기간이 지난 과거 공지까지 모두 보여주고 싶다면 `.filter(item => ...)` 블록을 제거하면 됩니다.
+ */
 function renderMessages(hospital) {
     const target = byId('messages');
     target.replaceChildren();
@@ -2564,9 +3733,10 @@ function renderMessages(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [13. 중증응급질환 28종 분류 체계 및 공지 교차 검증 (OpenAPI V13 더블체크 반영)]
-   - 요구사항 3 반영: OpenAPI 명세서 21페이지의 `MKioskTy28` (응급실 Emergency gate keeper)을
-     누락 없이 `SEVERE_DISEASE_GROUPS`에 추가했습니다.
+   [13. 중증응급질환 28종 분류 체계 및 공지 교차 검증 (`index.html` #severe 연동)]
+   - 데이터 출처: 백엔드 `NmcOpenApiClient.java` (`getSrsillDissAceptncPosblInfoInqire`) → `HospitalDto.severe`
+   - 특징: 단순 `Y/N` 값만 믿지 않고, 해당 병원의 실시간 차단 공지(`hospital.messages`)와 교차 검증하여
+     실제 진료 불가 공지가 떠 있으면 붉은색 `'불가능'` 배지로 경고해 줍니다!
    -------------------------------------------------------------------------- */
 
 const SEVERE_DISEASE_GROUPS = [
@@ -2710,6 +3880,10 @@ const SPECIFIC_BLOCK_TARGETS = {
     mkioskty27: { codes: ['Y0172'], names: ['영상의학혈관중재(영유아)'] }
 };
 
+/**
+ * [함수 역할]
+ * 개별 실시간 공지 메시지(`msg`)의 문구나 표출 코드가 '진료/수용 차단'을 의미하는지 판별합니다.
+ */
 function isNoticeBlocking(msg) {
     if (!msg) {
         return false;
@@ -2726,6 +3900,10 @@ function isNoticeBlocking(msg) {
     return /(불가|불가능|차단|수용\s*불가|진료\s*불가|수술\s*불가|부재|중단)/.test(body);
 }
 
+/**
+ * [함수 역할]
+ * 활성 공지 목록(`activeMessages`) 중 특정 중증질환 코드(`itemKey`, 예: `mkioskty1`)를 명시적으로 차단한 공지가 있는지 확인합니다.
+ */
 function isDiseaseSpecificallyBlocked(activeMessages, itemKey) {
     const config = SPECIFIC_BLOCK_TARGETS[itemKey];
     if (!config || !activeMessages.length) {
@@ -2754,6 +3932,12 @@ function isDiseaseSpecificallyBlocked(activeMessages, itemKey) {
     return false;
 }
 
+/**
+ * [함수 역할]
+ * 중증응급질환 28종 수용 가능 여부 매트릭스 보드를 `index.html`의 `#severe` 영역에 렌더링합니다.
+ * - 참고: `#section-severe`에는 `style.css`의 `.detail-section-deferred`(`content-visibility: auto`)가 적용되어 있어
+ *   사용자가 스크롤해 내려올 때 레이아웃·페인트를 수행하므로 상세 시트 초기 열림 속도가 매우 빠릅니다.
+ */
 function renderSevere(hospital) {
     const target = byId('severe');
     if (!target) {
@@ -2845,12 +4029,20 @@ function renderSevere(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [14. 실시간 가용 병상 렌더링 엔진 (현장 실사 도메인 규칙 & OpenAPI V13 더블체크 반영)]
-   - 음수 값(< 0)은 '초과수용', 공란/null은 '-'로 엄격 분리 표기합니다.
-   - OpenAPI 설명서 대조 결과 누락되어 있던 격리진료구역(hv13/hv14), 외상환자진료구역(hv61),
-     정형외과 입원실(hv4), 감염병 전담병상(hv22~hv26)을 모두 보드에 반영했습니다.
+   [14. 실시간 가용 병상 렌더링 엔진 (현장 실사 도메인 규칙 엄수)]
+   - 도메인 절대 규칙:
+     1) 음수 병상 값(`< 0`)은 오류가 아니라 정원을 넘어 환자를 받고 있는 상태이므로 **'초과수용'**으로 표기합니다.
+     2) 빈 값(`null`/`""`)은 0석으로 왜곡하지 않고 **`'-'` / `'미정보'`**로 엄격 분리 표기합니다.
    -------------------------------------------------------------------------- */
 
+/**
+ * [함수 역할]
+ * 지도 위 병원 카드(`.hospital-card`), 클러스터 목록, 실도로 최단시간 추천 배지에서
+ * 응급실 일반병상(`hvec`) 수치를 짧은 한글 요약 문자열(`"5석"`, `"초과수용 2석"`, `"미정보"`)로 변환합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `updateMarkers()`, `openCluster()`, `loadEtaRanking()`, `populateWaypointSelect()`
+ */
 function bedValue(raw) {
     if (isMissing(raw)) {
         return '미정보';
@@ -2968,11 +4160,14 @@ function formatParamLabel(currentKey, baselineKey) {
 
 /**
  * [함수 역할]
- * 병상 가용 수치(`current`)와 기준 수치(`baseline`)를 비교하여 상태 배지를 반환합니다.
+ * 병상 가용 수치(`current`)와 기준 병상 수치(`baseline`)의 비율을 계산하여
+ * `원활`(초록) / `보통`(주황) / `혼잡`(빨강) / `초과수용`(빨강 강조) / `-`(미보고) 배지 스타일을 반환합니다.
  *
- * [현장 실사 도메인 규칙 (요구사항 3)]
- * 1. `isBlankOrNull(rawVal)` -> `'-'` (결측치를 0으로 왜곡하지 않음)
- * 2. `current < 0` -> `'초과수용 {overflow}/{baseline}'` (음수 값은 기준 병상을 초과하여 수용 중임을 뜻함)
+ * [수정 시 영향 및 예시]
+ * - 현재는 가용률이 35% 이하(`ratio <= 0.35`)일 때 `'혼잡'`으로 표시합니다.
+ *   만약 20% 이하일 때만 `'혼잡'`으로 표시하고 싶다면:
+ *   변경 전: if (current === 0 || ratio <= 0.35)
+ *   변경 후: if (current === 0 || ratio <= 0.20)
  */
 function getBedStatusBadge(fields, def) {
     const rawVal = fields[def.current];
@@ -3038,6 +4233,10 @@ function getBedStatusBadge(fields, def) {
     return { className: 'egen-badge-pill-red', text: '혼잡 0' };
 }
 
+/**
+ * [함수 역할]
+ * E-Gen 병상 매트릭스 보드의 개별 셀 1칸(`.egen-cell`)을 생성합니다.
+ */
 function createBedCell(fields, item) {
     const cell = node('div', 'egen-cell');
     const topRow = node('div', 'egen-cell-top');
@@ -3065,6 +4264,10 @@ function createBedCell(fields, item) {
     return cell;
 }
 
+/**
+ * [함수 역할]
+ * 응급실 병상 현황판(`EMERGENCY_BED_ITEMS`)을 `index.html`의 `#er-beds-board`에 렌더링합니다.
+ */
 function renderErBeds(hospital) {
     const target = byId('er-beds-board') || byId('beds-board');
     if (!target) {
@@ -3094,6 +4297,11 @@ function renderErBeds(hospital) {
     target.append(card);
 }
 
+/**
+ * [함수 역할]
+ * 중환자실·응급전용·외상전용·감염병·일반입원실 병상 현황판(`INPATIENT_BED_SECTIONS`)을
+ * `index.html`의 `#inpatient-beds-board`에 렌더링합니다.
+ */
 function renderInpatientBeds(hospital) {
     const target = byId('inpatient-beds-board');
     if (!target) {
@@ -3130,6 +4338,11 @@ function renderInpatientBeds(hospital) {
     target.append(card);
 }
 
+/**
+ * [함수 역할]
+ * 응급실 병상(`renderErBeds`), 입원병상(`renderInpatientBeds`), 개발자 모드 원본 병상(`renderRawBeds`)과
+ * 병상 보고 시각(`#bed-time`)을 한꺼번에 갱신합니다.
+ */
 function renderBeds(hospital) {
     const bedTimeEl = byId('bed-time');
     if (bedTimeEl) {
@@ -3148,7 +4361,8 @@ function renderBeds(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [15. 개발자 모드: API 원본 데이터(Raw Fields) 인스펙터]
+   [15. 개발자 모드: API 원본 데이터(Raw Fields) 인스펙터 (`index.html` #developer-mode)]
+   - 상세 시트 최하단의 '개발자 모드 · API 수신 원본 코드 대조' 아코디언을 열었을 때 보이는 표를 생성합니다.
    -------------------------------------------------------------------------- */
 
 function renderRawBeds(hospital) {
@@ -3362,8 +4576,7 @@ function renderRawMessages(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [16. 가용 장비 현황 (11대 핵심 응급의료 장비 보드 - OpenAPI V13 더블체크 반영)]
-   - 요구사항 3 반영: OpenAPI 명세서의 `hvamyn` (구급차 가용여부)를 보드에 추가했습니다.
+   [16. 가용 장비 현황 (11대 핵심 응급의료 장비 보드 — `index.html` #equipment 연동)]
    -------------------------------------------------------------------------- */
 
 const EQUIPMENT_TABLE_ITEMS = [
@@ -3412,7 +4625,7 @@ function createEquipmentCell(fields, item) {
 
     const currRaw = isBlankOrNull(rawVal) ? '-' : String(rawVal).trim();
     const baseRaw = item.baseline
-        ? (isBlankOrNull(rawBase) ? '-' : String(rawBase).trim())
+        ? (isBlankOrNull(rawBase) ? '-' : String(fields[item.baseline]).trim())
         : null;
 
     let paramText = formatParamLabel(item.key, item.baseline);
@@ -3427,6 +4640,10 @@ function createEquipmentCell(fields, item) {
     return cell;
 }
 
+/**
+ * [함수 역할]
+ * 11대 핵심 응급의료 장비 가용 현황 보드를 `index.html`의 `#equipment` 영역에 렌더링합니다.
+ */
 function renderEquipment(hospital) {
     const target = byId('equipment');
     if (!target) {
@@ -3457,7 +4674,7 @@ function renderEquipment(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [17. 기관 기본정보 및 외상센터 정보 렌더링]
+   [17. 기관 기본정보 및 외상센터 정보 렌더링 (`index.html` #basic-info 연동)]
    -------------------------------------------------------------------------- */
 
 function renderBasic(hospital) {
@@ -3500,7 +4717,7 @@ function renderBasic(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [18. 긴급 연락처 연결 및 3대 내비게이션 딥링크 연동]
+   [18. 긴급 전화 직통 연결(`tel:`) 및 3대 내비게이션 앱 딥링크 연동]
    -------------------------------------------------------------------------- */
 
 function contactLink(text, href, className) {
@@ -3509,6 +4726,11 @@ function contactLink(text, href, className) {
     return link;
 }
 
+/**
+ * [함수 역할]
+ * 현재 기기가 iPhone / iPad / iPod 등 Apple 터치 디바이스인지 판별합니다.
+ * - iPadOS 데스크톱 모드(`Macintosh` + `maxTouchPoints > 1`)까지 정확히 감지합니다.
+ */
 function isAppleTouchDevice() {
     const userAgent = navigator.userAgent || '';
     return (
@@ -3517,6 +4739,11 @@ function isAppleTouchDevice() {
     );
 }
 
+/**
+ * [함수 역할]
+ * 모바일(Android `intent://` / iOS 커스텀 스킴)에서는 네이티브 내비게이션 앱(네이버지도·카카오맵·T맵)을 즉시 실행하고,
+ * 앱이 설치되어 있지 않거나 데스크톱 PC 환경이면 웹 지도/앱스토어 폴백 URL로 안전하게 연결합니다.
+ */
 function openMobileApp(scheme, androidPackage, fallback) {
     if (/Android/i.test(navigator.userAgent)) {
         const intent = scheme.replace(/^[a-z]+:\/\//, 'intent://');
@@ -3563,6 +4790,10 @@ function openMobileApp(scheme, androidPackage, fallback) {
     window.location.href = scheme;
 }
 
+/**
+ * [함수 역할]
+ * 내비게이션 서비스별(`'naver'`, `'kakao'`, `'tmap'`) 실행 스킴·안드로이드 패키지명·폴백 URL을 생성합니다.
+ */
 function navigationLink(provider, hospital) {
     const name = encodeURIComponent(hospital.name);
     const lat = hospital.lat;
@@ -3616,6 +4847,16 @@ function launchNavigation(provider, hospital) {
     openMobileApp(link.scheme, link.package, link.fallback);
 }
 
+/**
+ * [함수 역할]
+ * 상세 시트 상단(`index.html`의 `#contact-actions`)에 응급실/대표전화 직통 발신 버튼(`tel:`)과
+ * 네이버지도·카카오맵·T맵 길찾기 실행 버튼을 렌더링합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `openHospital()`
+ * - 짝을 이루는 CSS: `frontend/style.css`의 `.contact-actions`, `.phone-actions`, `.navigation-actions`
+ *   (모바일에서도 최소 터치 높이 `44px` 이상 보장)
+ */
 function renderContacts(hospital) {
     const target = byId('contact-actions');
     const phones = node('div', 'phone-actions');
@@ -3657,114 +4898,28 @@ function renderContacts(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [19. 병원 상세정보 바텀시트(Bottom Sheet) 인터랙션, 파노라마(거리뷰) 및 접근성]
+   [19. 병원 상세정보 시트(`index.html` #sheet) 인터랙션, 반응형 전환 & 접근성]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 병원 상세창 전환 또는 닫기 시 거리뷰(`naver.maps.Panorama`) 컨테이너를 초기 접힘 상태로 리셋합니다.
+ * 특정 병원(`hospital`)의 종합 상세 정보창(`index.html`의 `#sheet`)을 열고,
+ * 연락처·실시간 공지·응급실/입원 병상·가용 장비·중증질환·기본정보·자동차 경로(ETA)를 일괄 렌더링합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming):
+ *   1) 지도 위 `.hospital-card` 클릭 (`bindHospitalCard`)
+ *   2) 클러스터 모달 목록 클릭 (`openCluster`)
+ *   3) 검색창 자동완성 결과 클릭 (`updateSearch`)
+ *   4) 실도로 최단시간 추천 순위 클릭 (`loadEtaRanking`)
+ *   5) 백그라운드 새로고침 시 열려 있는 병원 데이터 갱신 (`fetchData(..., false)`)
+ * - 호출하는 하위 렌더러(Outgoing):
+ *   `renderContacts()`, `renderMessages()`, `renderBeds()`, `renderEquipment()`, `renderSevere()`,
+ *   `renderBasic()`, `renderRawSevere()`, `renderRawMessages()`, `loadDirectionsForHospital()`(`GET /api/directions`)
+ *
+ * @param {Object} hospital 열 대상 병원 객체 (`HospitalDto`)
+ * @param {boolean} [focus=true] 시트 열림 시 스크롤을 맨 위로 올리고 닫기 버튼으로 포커스를 옮길지 여부
  */
-function resetPanorama() {
-    state.panoramaOpen = false;
-    const wrap = byId('panorama-wrap');
-    const btn = byId('panorama-toggle-btn');
-    const status = byId('panorama-status');
-
-    if (wrap) {
-        wrap.hidden = true;
-    }
-    if (btn) {
-        btn.setAttribute('aria-expanded', 'false');
-        btn.textContent = '거리뷰 열기';
-    }
-    if (status) {
-        status.textContent = '';
-    }
-}
-
-/**
- * [함수 역할]
- * 현재 선택된 병원(`state.selected`) 주변의 네이버 거리뷰(`naver.maps.Panorama`)를 열거나 닫습니다.
- */
-function toggleHospitalPanorama() {
-    const wrap = byId('panorama-wrap');
-    const btn = byId('panorama-toggle-btn');
-    const viewEl = byId('panorama-view');
-    const statusEl = byId('panorama-status');
-    const hospital = state.selected;
-
-    if (!wrap || !btn || !viewEl || !hospital) {
-        return;
-    }
-
-    if (state.panoramaOpen) {
-        resetPanorama();
-        return;
-    }
-
-    state.panoramaOpen = true;
-    wrap.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
-    btn.textContent = '거리뷰 닫기';
-
-    if (typeof naver === 'undefined' || !naver.maps?.Panorama) {
-        if (statusEl) {
-            statusEl.textContent = '네이버 지도 Panorama 서브모듈을 불러오지 못했습니다.';
-        }
-        return;
-    }
-
-    if (statusEl) {
-        statusEl.textContent = `${hospital.name} 주변 도로 거리뷰를 불러오는 중입니다…`;
-    }
-
-    const targetPos = new naver.maps.LatLng(hospital.lat, hospital.lng);
-
-    try {
-        if (!state.panorama) {
-            state.panorama = new naver.maps.Panorama(viewEl, {
-                position: targetPos,
-                pov: {
-                    pan: 0,
-                    tilt: 10,
-                    fov: 100
-                }
-            });
-
-            naver.maps.Event.addListener(state.panorama, 'pano_changed', () => {
-                const loc = state.panorama?.getLocation?.();
-                if (statusEl && loc) {
-                    const roadTitle = [loc.address, loc.title].filter(Boolean).join(' · ');
-                    const photoDate = loc.photodate ? ` (촬영: ${String(loc.photodate).slice(0, 10)})` : '';
-                    statusEl.textContent = roadTitle
-                        ? `거리뷰 위치: ${roadTitle}${photoDate}`
-                        : '거리뷰 로드 완료 (마우스 드래그로 360° 회전 가능)';
-                }
-            });
-
-            naver.maps.Event.addListener(state.panorama, 'pano_status', statusCode => {
-                if (statusCode !== 'OK' && statusEl) {
-                    statusEl.textContent = '해당 병원 반경 300m 이내에 제공되는 네이버 거리뷰가 없습니다.';
-                }
-            });
-        } else {
-            state.panorama.setPosition(targetPos);
-            setTimeout(() => {
-                try {
-                    const size = new naver.maps.Size(viewEl.clientWidth || 320, viewEl.clientHeight || 260);
-                    state.panorama.setSize?.(size);
-                } catch {
-                    // 리사이즈 예외 무시
-                }
-            }, 80);
-        }
-    } catch (err) {
-        if (statusEl) {
-            statusEl.textContent = `거리뷰 초기화 실패: ${err.message}`;
-        }
-    }
-}
-
 function openHospital(hospital, focus = true) {
     closeRadius();
     byId('search-results').hidden = true;
@@ -3783,10 +4938,14 @@ function openHospital(hospital, focus = true) {
     const isDifferentHospital = state.selected?.id !== hospital.id;
     if (isDifferentHospital) {
         byId('developer-mode').open = false;
-        resetPanorama();
+        state.sheetRouteData = null;
     }
 
     state.selected = hospital;
+    const dirClearBtn = byId('directions-clear-btn');
+    if (dirClearBtn) {
+        dirClearBtn.hidden = !state.activeRoute;
+    }
     byId('hospital-name').textContent = hospital.name;
 
     if (state.lastUpdated) {
@@ -3850,8 +5009,13 @@ function openHospital(hospital, focus = true) {
     setTimeout(updateMarquees, 350);
 }
 
+/**
+ * [함수 역할]
+ * 병원 상세 시트(`#sheet`)가 열려 있는 동안 뒤쪽 배경 요소(`#map`, `#search-panel`, `#active-route-banner`, `#mobile-top-left-menu`)에
+ * 표준 `inert` 속성을 설정하여 스크린 리더·키보드 탭 포커스가 시트 밖으로 새어나가지 않도록 보호합니다.
+ */
 function setBackgroundInert(value) {
-    for (const selector of ['#map', '#search-panel']) {
+    for (const selector of ['#map', '#search-panel', '#active-route-banner', '#mobile-top-left-menu']) {
         const el = document.querySelector(selector);
         if (el) {
             el.inert = value;
@@ -3859,6 +5023,14 @@ function setBackgroundInert(value) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 열려 있는 병원 상세 시트(`#sheet`)를 닫고 배경 인터랙션 및 이전 포커스를 복원합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `#sheet-close`(× 버튼), `#sheet-dim`(어두운 배경 클릭), `Escape` 키,
+ *   모바일 드래그 핸들 아래로 쓸어내리기(`initSheetDrag`), `'지도에 경로 표시'` 버튼 클릭 직후(`initDirectionsControls`)
+ */
 function closeSheet() {
     byId('sheet').classList.remove('open');
     byId('sheet').style.transform = '';
@@ -3866,7 +5038,6 @@ function closeSheet() {
     byId('sheet').setAttribute('aria-hidden', 'true');
     byId('sheet-dim').hidden = true;
 
-    resetPanorama();
     state.selected = null;
     byId('sheet').inert = true;
     setBackgroundInert(false);
@@ -3893,7 +5064,7 @@ function closeSheet() {
  * [수정 시 영향 및 예시]
  * - QHD 이상 모니터에서만 중앙 모달이 뜨게 하고 싶다면:
  *   변경 전: const LARGE_MONITOR_MIN_WIDTH = 1200;
- *   변경 후: const LARGE_MONITOR_MIN_WIDTH = 1600; (style.css의 @media (min-width: 1200px)도 함께 변경)
+ *   변경 후: const LARGE_MONITOR_MIN_WIDTH = 1600; (`frontend/style.css`의 `@media (min-width: 1200px)`도 함께 변경)
  */
 const LARGE_MONITOR_MIN_WIDTH = 1200;
 const LARGE_MONITOR_MIN_HEIGHT = 680;
@@ -3901,19 +5072,11 @@ const MOBILE_MAX_WIDTH = 640;
 
 /**
  * [함수 역할]
- * 현재 브라우저 뷰포트 크기 및 입력 장치 특성에 따라 병원 상세창(`#sheet`)의 레이아웃 모드를
- * 동적으로 판별하고 `document.body`의 상태 속성(`data-sheet-layout`, `.touch-device`)을 동기화합니다.
+ * 브라우저 뷰포트 크기와 포인터 특성(터치 전용 vs 마우스 겸용)을 판별하여
+ * 병원 상세창(`#sheet`)을 3단계 레이아웃(`mobile` 바텀시트 / `slider` 우측 드로어 / `modal` 중앙 모달)으로 전환합니다.
  *
- * [3단계 동적 레이아웃]
- * 1. `mobile` (모바일 바텀시트):
- *    - 화면 가로 `640px` 이하이거나, 마우스(`any-pointer: fine`) 없이 터치(`pointer: coarse`)만 사용하는 스마트폰/태블릿 환경
- *    - 하단에서 위로 올라오는 기존 바텀시트 형태를 그대로 유지합니다.
- * 2. `modal` (대화면 모니터 중앙 둥근모서리 사각 모달):
- *    - 데스크톱/노트북 모니터 환경에서 화면 가로 `1200px` 이상 & 세로 `680px` 이상일 때
- *    - 화면 정중앙에 둥근 모서리 사각 카드가 나타나고 내부 콘텐츠는 스크롤 처리됩니다.
- * 3. `slider` (작은 모니터 / 창 축소 시 우측 슬라이더 카드):
- *    - 데스크톱/노트북 환경에서 창 너비가 `1200px` 미만이거나 높이가 `680px` 미만일 때
- *    - 기존처럼 우측에서 좌측으로 나오는 슬라이더 드로어 형태로 동작합니다.
+ * [코드의 경로성]
+ * - 짝을 이루는 CSS: `frontend/style.css`의 `.touch-device .sheet` 및 `@media (min-width: 1200px) and (min-height: 680px)`
  */
 function syncResponsiveSheetLayout() {
     const isCoarseOnlyMobile =
@@ -3946,6 +5109,14 @@ function syncResponsiveSheetLayout() {
     }
 }
 
+/**
+ * [함수 역할]
+ * 아이폰·안드로이드 터치 기기에서 상세 바텀시트 상단 손잡이(`#sheet-drag-handle`)를 아래로 `90px` 넘게
+ * 끌어내리면 시트가 자연스럽게 닫히도록 터치 스와이프 제스처를 바인딩합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 살짝만 내려도 닫히게 민감도를 높이고 싶다면 `if (delta > 90)`을 `if (delta > 60)`으로 줄이세요.
+ */
 function initSheetDrag() {
     const handle = byId('sheet-drag-handle');
     const sheet = byId('sheet');
@@ -4001,12 +5172,13 @@ function initSheetDrag() {
 }
 
 /* --------------------------------------------------------------------------
-   [20. 네이버 지도 뷰포트 영역 계산 및 반경 피팅]
+   [20. 네이버 지도 뷰포트 경계 계산 및 상·하단 UI 침범 방지 피팅]
    -------------------------------------------------------------------------- */
 
 /**
  * [함수 역할]
- * 상하단 오버레이 패널 높이를 감안하여 네이버 지도 뷰포트 패딩을 적용하고 경계 영역(`bounds`)을 피팅합니다.
+ * 상단 활성 경로 배너(`#active-route-banner`)와 하단 검색 패널(`.search-panel`)의 실제 높이를 계산하여,
+ * 경로선이나 반경 원이 플로팅 UI에 가려지지 않도록 여백(Padding)을 두고 네이버 지도 영역(`bounds`)을 맞춥니다.
  *
  * @param {Object} bounds 피팅할 위경도 경계(`naver.maps.LatLngBounds`) 객체
  */
@@ -4022,8 +5194,12 @@ function fitBounds(bounds) {
 
     const height = byId('map').clientHeight || window.innerHeight;
     const searchPanel = document.querySelector('.search-panel');
+    const activeBanner = byId('active-route-banner');
 
-    const top = 32;
+    const bannerBottom = (activeBanner && !activeBanner.hidden)
+        ? activeBanner.getBoundingClientRect().bottom + 16
+        : 0;
+    const top = Math.max(32, Math.min(Math.round(bannerBottom), Math.round(height * 0.22)));
     const bottom = Math.min((searchPanel?.offsetHeight || 120) + 24, height * 0.25);
 
     try {
@@ -4038,6 +5214,11 @@ function fitBounds(bounds) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 중심 좌표(`origin`)로부터 `radiusKm` 반경을 감싸는 남·북·서·동 위경도 사각 경계(Bounding Box)를 계산합니다.
+ * - `fitRadius()`의 지도 줌 계산뿐만 아니라 `updateMarkers()`의 초고속 사전 필터링에도 함께 사용됩니다!
+ */
 function radiusExtent(origin, radiusKm) {
     const angle = radiusKm / 6371;
     const latDelta = angle * 180 / Math.PI;
@@ -4055,6 +5236,10 @@ function radiusExtent(origin, radiusKm) {
     };
 }
 
+/**
+ * [함수 역할]
+ * 현재 선택된 반경(`5 km`, `10 km`, `20 km`, `전국` 등)이 한눈에 들어오도록 지도 카메라를 조정합니다.
+ */
 function fitRadius() {
     if (!state.map) {
         return;
@@ -4068,13 +5253,10 @@ function fitRadius() {
                 new naver.maps.LatLng(38.7, 131.9)
             );
         } else {
-            const first = state.hospitals[0];
-            bounds = new naver.maps.LatLngBounds(
-                new naver.maps.LatLng(first.lat, first.lng),
-                new naver.maps.LatLng(first.lat, first.lng)
-            );
-            for (const hospital of state.hospitals) {
-                bounds.extend(new naver.maps.LatLng(hospital.lat, hospital.lng));
+            const firstPos = getHospitalLatLng(state.hospitals[0]);
+            bounds = new naver.maps.LatLngBounds(firstPos, firstPos);
+            for (let i = 1; i < state.hospitals.length; i++) {
+                bounds.extend(getHospitalLatLng(state.hospitals[i]));
             }
         }
     } else {
@@ -4090,7 +5272,7 @@ function fitRadius() {
 }
 
 /* --------------------------------------------------------------------------
-   [21. 응급의료 서비스 이용 안내 모달 및 패널 컨트롤러]
+   [21. 응급의료 서비스 이용 안내 모달(`#notice-dialog`) 및 검색 패널 컨트롤러]
    -------------------------------------------------------------------------- */
 
 function noticeHidden() {
@@ -4137,10 +5319,30 @@ function initNotice() {
     }
 }
 
+/**
+ * [함수 역할]
+ * 하단 검색 패널(`#search-panel`)의 접기/펼치기 버튼(`#search-toggle`)과 높이 측정(`--search-panel-height`)을 관리합니다.
+ * - 모바일 주소창 변화 등으로 `resize`가 연속 발생할 때 `requestAnimationFrame`으로 프레임당 1회만 높이를 재측정합니다.
+ */
 function initPanels() {
+    let heightRafId = 0;
     const updateHeight = () => {
-        const height = byId('search-panel').offsetHeight;
+        const panelEl = byId('search-panel');
+        if (!panelEl) {
+            return;
+        }
+        const height = panelEl.offsetHeight;
         document.documentElement.style.setProperty('--search-panel-height', `${height}px`);
+    };
+
+    const scheduleUpdateHeight = () => {
+        if (heightRafId) {
+            return;
+        }
+        heightRafId = requestAnimationFrame(() => {
+            heightRafId = 0;
+            updateHeight();
+        });
     };
 
     const button = byId('search-toggle');
@@ -4168,11 +5370,11 @@ function initPanels() {
         });
     }
 
-    if ('ResizeObserver' in window) {
-        new ResizeObserver(updateHeight).observe(byId('search-panel'));
+    if ('ResizeObserver' in window && panel) {
+        new ResizeObserver(scheduleUpdateHeight).observe(panel);
     }
 
-    window.addEventListener('resize', updateHeight);
+    window.addEventListener('resize', scheduleUpdateHeight, { passive: true });
     updateHeight();
 }
 
@@ -4183,6 +5385,11 @@ function blurKeyword() {
     }
 }
 
+/**
+ * [함수 역할]
+ * 모바일 핀치 줌·지도 드래그 시 가상 키보드가 자동으로 내려가도록 포커스를 제어하고,
+ * 한글(Hangul) IME 자모 조합 중 `Enter` 키 중복 제출 버그(`event.isComposing`)를 차단합니다.
+ */
 function initSearchFocus() {
     const keyword = byId('keyword');
     let multiTouch = false;
@@ -4218,7 +5425,6 @@ function initSearchFocus() {
         }
     });
 
-    // Modern Web Guidance: 한글(Hangul) IME 조합 중 Enter 키가 중복 제출을 일으키지 않도록 방어
     keyword.addEventListener('keydown', event => {
         if (event.key === 'Enter' && (event.isComposing || event.keyCode === 229)) {
             event.preventDefault();
@@ -4235,9 +5441,13 @@ function initSearchFocus() {
 }
 
 /* --------------------------------------------------------------------------
-   [22. 애플리케이션 진입점 및 네이버 지도 초기화]
+   [22. 애플리케이션 진입점(`init`), 모바일 메뉴 원자적 이동 & 네이버 지도 마운트]
    -------------------------------------------------------------------------- */
 
+/**
+ * [함수 역할]
+ * 모바일 좌측 상단 `☰` 햄버거 버튼(`index.html`의 `#mobile-menu-btn`) 클릭 시 도구 서랍(`#mobile-menu-drawer`)을 열고 닫습니다.
+ */
 function toggleMobileMenu(forceValue) {
     const drawer = byId('mobile-menu-drawer');
     const btn = byId('mobile-menu-btn');
@@ -4253,6 +5463,40 @@ function toggleMobileMenu(forceValue) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 최신 웹 표준 `Element.prototype.moveBefore()` API를 사용하여 DOM 요소를 포커스·CSS 트랜지션 상태 손실 없이
+ * 원자적으로 이동시키고, 미지원 브라우저에서는 `insertBefore` / `appendChild`로 안전하게 폴백합니다.
+ */
+function moveElementPreservingState(parent, child, referenceNode = null) {
+    if (!parent || !child) {
+        return;
+    }
+    if (typeof parent.moveBefore === 'function' && parent.isConnected && child.isConnected) {
+        try {
+            parent.moveBefore(child, referenceNode);
+            return;
+        } catch {
+            // 구형 엔진 또는 예외 상황 시 표준 DOM 이동 메서드로 폴백
+        }
+    }
+    if (referenceNode) {
+        parent.insertBefore(child, referenceNode);
+    } else {
+        parent.appendChild(child);
+    }
+}
+
+/**
+ * [함수 역할]
+ * 화면 가로폭 `640px` 이하(아이폰·안드로이드 스마트폰)에서는 도구 모음(`#map-actions`)을
+ * 좌측 상단 `☰` 드로어(`#mobile-menu-drawer`) 안으로 옮겨 하단 검색창이 지도를 가리지 않게 하고,
+ * `641px` 이상(태블릿·데스크톱)에서는 다시 검색 패널 헤더(`#search-panel-heading`) 안으로 복귀시킵니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `init()` 초기 실행 및 `resize` rAF 병합 콜백
+ * - 가리키는 DOM(Outgoing): `frontend/index.html`의 `#map-actions`, `#mobile-menu-drawer`, `#search-panel-heading`
+ */
 function syncMobileMenuPlacement() {
     const mapActions = byId('map-actions');
     const mobileDrawer = byId('mobile-menu-drawer');
@@ -4265,11 +5509,11 @@ function syncMobileMenuPlacement() {
     const isMobile = window.matchMedia('(max-width: 640px)').matches;
     if (isMobile) {
         if (mapActions.parentElement !== mobileDrawer) {
-            mobileDrawer.appendChild(mapActions);
+            moveElementPreservingState(mobileDrawer, mapActions, null);
         }
     } else {
         if (mapActions.parentElement !== searchHeading) {
-            searchHeading.insertBefore(mapActions, searchToggle || null);
+            moveElementPreservingState(searchHeading, mapActions, searchToggle || null);
         }
         if (state.mobileMenuOpen) {
             toggleMobileMenu(false);
@@ -4277,16 +5521,28 @@ function syncMobileMenuPlacement() {
     }
 }
 
+/**
+ * [함수 역할]
+ * 상세 시트 내 길찾기 엔진 선택(`#directions-api`), 경유지 선택(`#directions-waypoint`),
+ * `'지도에 경로 표시'`(`#directions-draw-btn`), `'경로 지우기'`(`#directions-clear-btn` / `#active-route-clear`),
+ * 그리고 점+경로 통합 `'초기화'`(`#active-route-reset` / `#origin-reset-btn`) 버튼 이벤트를 바인딩합니다.
+ */
 function initDirectionsControls() {
     byId('directions-api')?.addEventListener('change', () => {
         if (state.selected) {
-            loadDirectionsForHospital(state.selected, Boolean(state.routePolyline));
+            const isSelectedActive = Boolean(
+                state.activeRoute && state.activeRoute.hospital?.id === state.selected.id
+            );
+            loadDirectionsForHospital(state.selected, isSelectedActive, { fitMap: false });
         }
     });
 
     byId('directions-waypoint')?.addEventListener('change', () => {
         if (state.selected) {
-            loadDirectionsForHospital(state.selected, Boolean(state.routePolyline));
+            const isSelectedActive = Boolean(
+                state.activeRoute && state.activeRoute.hospital?.id === state.selected.id
+            );
+            loadDirectionsForHospital(state.selected, isSelectedActive, { fitMap: true });
         }
     });
 
@@ -4294,12 +5550,21 @@ function initDirectionsControls() {
         if (!state.selected) {
             return;
         }
-        if (state.activeRouteData && state.activeRouteData.code === 0 && state.activeRouteData.path?.length) {
-            drawRouteOnMap(state.selected, state.activeRouteData);
+        const apiType = byId('directions-api')?.value || 'directions5';
+        const option = state.selectedDirectionOption || 'trafast';
+        const rawWaypoint = byId('directions-waypoint')?.value || '';
+
+        if (state.sheetRouteData && state.sheetRouteData.code === 0 && state.sheetRouteData.path?.length) {
+            drawRouteOnMap(state.selected, state.sheetRouteData, {
+                fitMap: true,
+                apiType,
+                option,
+                rawWaypoint
+            });
             closeSheet();
         } else {
-            loadDirectionsForHospital(state.selected, true).then(() => {
-                if (state.routePolyline) {
+            loadDirectionsForHospital(state.selected, true, { fitMap: true }).then(() => {
+                if (hasRenderedRoute()) {
                     closeSheet();
                 }
             });
@@ -4308,21 +5573,21 @@ function initDirectionsControls() {
 
     byId('directions-clear-btn')?.addEventListener('click', clearRouteOnMap);
     byId('active-route-clear')?.addEventListener('click', clearRouteOnMap);
-    byId('panorama-toggle-btn')?.addEventListener('click', toggleHospitalPanorama);
+    byId('active-route-reset')?.addEventListener('click', resetOriginAndRoute);
+    byId('origin-reset-btn')?.addEventListener('click', resetOriginAndRoute);
 }
 
 /**
  * [함수 역할]
- * 현재 테마(`state.darkMode`)에 맞춰 네이버 지도(`naver.maps.Map`) 인스턴스를 마운트하거나 재마운트합니다.
+ * 현재 테마(`state.darkMode`)에 맞춰 네이버 WebGL 벡터 지도(`naver.maps.Map`)를 `#map` 안에 마운트(또는 재마운트)합니다.
  *
- * [동작 원리]
- * - 다크 모드(`state.darkMode === true`)일 때:
- *   네이버 지도 Style Editor의 GL 커스텀 스타일(`gl: true`, `customStyleId: '4b12b380-f70c-4d42-85df-ecf7961ff041'`)을
- *   적용하여 야간 관제용 다크 지도를 렌더링합니다.
- * - 라이트 모드(`state.darkMode === false`)일 때:
- *   표준 라이트 지도를 렌더링하며, 전환 직전의 중심 좌표(`center`), 줌 레벨(`zoom`),
- *   탐색 반경 원(`circle`), 내 위치 마커(`locationMarker`), 병원 마커 카드(`markers`),
- *   자동차 주행 경로 폴리라인(`routePolyline`)을 그대로 보존·복원합니다.
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `init()` 앱 최초 시작 시, 그리고 `applyTheme()`로 다크/라이트 테마를 전환할 때
+ * - 바인딩하는 핵심 지도 이벤트:
+ *   1) `'glReady'` : WebGL 스타일 로드 직후 반경 원·내 위치 점·마커·교통소통·활성 경로를 즉시 복원
+ *   2) `'idle'`    : 카메라 이동이 멈췄을 때 `updateMarkers()`(Key-Diffing 마커 갱신) 실행
+ *   3) `'rightclick'` / `'longtap'` : 데스크톱 우클릭 또는 모바일 롱탭 위치를 `setCustomOrigin()`으로 전달해
+ *      출발점을 옮기고 활성 경로가 있으면 실시간 재탐색!
  */
 function mountNaverMap() {
     if (typeof naver === 'undefined' || !naver.maps) {
@@ -4346,13 +5611,12 @@ function mountNaverMap() {
         // 이전 지도 좌표 조회 중 예외 무시
     }
 
-    const hadActiveRoute = Boolean(
-        state.routePolyline &&
-        state.selected &&
-        state.activeRouteData?.code === 0 &&
-        Array.isArray(state.activeRouteData.path) &&
-        state.activeRouteData.path.length
-    );
+    const savedActiveRoute = (
+        state.activeRoute?.hospital &&
+        state.activeRoute?.data?.code === 0 &&
+        Array.isArray(state.activeRoute.data.path) &&
+        state.activeRoute.data.path.length
+    ) ? { ...state.activeRoute } : null;
 
     clearMarkers();
     try {
@@ -4371,17 +5635,12 @@ function mountNaverMap() {
     }
     state.locationMarker = null;
 
+    removeRouteOverlays();
     try {
-        state.routeOutlinePolyline?.setMap(null);
-        state.routePolyline?.setMap(null);
-        state.waypointMarker?.setMap(null);
         state.trafficLayer?.setMap(null);
     } catch {
         // 무시
     }
-    state.routeOutlinePolyline = null;
-    state.routePolyline = null;
-    state.waypointMarker = null;
     state.trafficLayer = null;
 
     try {
@@ -4390,7 +5649,6 @@ function mountNaverMap() {
         // 기존 맵 인스턴스 해제 중 예외 무시
     }
 
-    // 이전 MapView.destroy()로 인한 잔여 속성/이벤트 충돌을 원천 차단하기 위해 새 내부 캔버스 호스트 생성
     const canvasHost = document.createElement('div');
     canvasHost.className = 'naver-map-canvas';
     canvasHost.style.width = '100%';
@@ -4404,8 +5662,6 @@ function mountNaverMap() {
         mapDataControl: false
     };
 
-    // 다크 모드와 라이트 모드 모두 동일한 WebGL 벡터 엔진(gl: true)을 사용하여
-    // 마우스 스크롤 휠 확대/축소량(1/200 소수점 단위 줌)과 60fps 애니메이션 부드러움을 완벽히 통일합니다.
     if (!naver.maps.glEnabled && !state._glWaitFinished) {
         if (!state._glCallbackBound) {
             state._glCallbackBound = true;
@@ -4444,7 +5700,8 @@ function mountNaverMap() {
                 glOptions.customStyleId = state.naverDarkStyleId;
             }
             state.map = new naver.maps.Map(canvasHost, glOptions);
-            usingGlEngine = true;
+            // 소프트웨어 렌더러·저사양 GPU 등에서 SDK가 예외 없이 내부적으로 2D 모드(renderMode=1)로 자동 폴백한 경우까지 정확히 판별
+            usingGlEngine = state.map?.get?.('renderMode') === 2;
         } catch (err) {
             console.warn('네이버 GL 벡터 지도 초기화 실패 — 기본 2D 지도로 폴백합니다:', err);
             state.diagnostics.lastError = String(err?.message || err);
@@ -4470,15 +5727,25 @@ function mountNaverMap() {
     if (usingGlEngine) {
         naver.maps.Event.addListener(state.map, 'glReady', () => {
             syncMapOverlays();
-            if (hadActiveRoute && state.selected && state.activeRouteData) {
-                drawRouteOnMap(state.selected, state.activeRouteData);
+            if (savedActiveRoute) {
+                drawRouteOnMap(savedActiveRoute.hospital, savedActiveRoute.data, {
+                    fitMap: false,
+                    apiType: savedActiveRoute.apiType,
+                    option: savedActiveRoute.option,
+                    rawWaypoint: savedActiveRoute.rawWaypoint
+                });
             }
         });
     } else {
         naver.maps.Event.addListener(state.map, 'init', syncMapOverlays);
         syncMapOverlays();
-        if (hadActiveRoute && state.selected && state.activeRouteData) {
-            drawRouteOnMap(state.selected, state.activeRouteData);
+        if (savedActiveRoute) {
+            drawRouteOnMap(savedActiveRoute.hospital, savedActiveRoute.data, {
+                fitMap: false,
+                apiType: savedActiveRoute.apiType,
+                option: savedActiveRoute.option,
+                rawWaypoint: savedActiveRoute.rawWaypoint
+            });
         }
     }
 
@@ -4487,7 +5754,7 @@ function mountNaverMap() {
         updateMarkers();
     });
 
-    // 지도 우클릭(데스크톱) 또는 롱탭(모바일 터치)으로 즉시 임의 출발 기준점 지정
+    // 지도 우클릭(데스크톱) 또는 롱탭(모바일 터치)으로 즉시 임의 출발 기준점 지정 + 활성 경로 실시간 갱신
     naver.maps.Event.addListener(state.map, 'rightclick', event => {
         const coord = event?.coord || event?.latlng;
         if (coord && typeof coord.lat === 'function' && typeof coord.lng === 'function') {
@@ -4507,6 +5774,8 @@ function mountNaverMap() {
     }
 
     state.diagnostics.getState = () => state;
+    state.diagnostics.hasRenderedRoute = hasRenderedRoute;
+    state.diagnostics.glRouteSourceId = GL_ROUTE_SOURCE_ID;
     state.diagnostics.getSchemas = () => ({
         EMERGENCY_BED_ITEMS,
         INPATIENT_BED_SECTIONS,
@@ -4518,20 +5787,35 @@ function mountNaverMap() {
 
 /**
  * [함수 역할]
- * 다크 모드 / 라이트 모드 테마 상태를 전환하고 UI 클래스, 좌측 하단 버튼 아이콘, 네이버 지도 스타일을 동기화합니다.
+ * 다크 모드 / 라이트 모드 테마를 전환하고 `<meta name="color-scheme">`, `<html data-theme>`,
+ * `<body class="dark-mode">`, 토글 버튼 아이콘, 네이버 지도 스타일을 한 번에 동기화합니다.
+ *
+ * [코드의 경로성]
+ * - 호출하는 곳(Incoming): `initThemeToggle()` 초기 실행 및 `#theme-toggle` 버튼 클릭
+ * - 연동되는 파일(Outgoing):
+ *   1) `frontend/index.html`의 `<meta name="color-scheme">` 및 `<html data-theme>`
+ *   2) `frontend/style.css`의 `:root:has(> head > meta[name="color-scheme"]...)` 및 `body.dark-mode`
+ *   3) `mountNaverMap()` (다크/라이트 GL 지도 재마운트 및 활성 경로·마커 자동 복원)
  *
  * [수정 시 영향 및 예시]
- * - 최초 접속 시 기본 테마를 다크(`true`)가 아닌 라이트(`false`)로 바꾸고 싶다면
- *   `state.darkMode` 초기값과 `init()` 내부의 `applyTheme(true, false)`를 `false`로 변경하면 됩니다.
+ * - 최초 접속 시 기본 테마를 다크(`true`)가 아닌 라이트(`false`)로 시작하고 싶다면:
+ *   `state.darkMode = false`와 아래 `initThemeToggle()`의 `applyTheme(false, false)`(및 `index.html` 초기 속성)를 변경하세요.
  *
- * @param {boolean} isDark 다크 모드 활성화 여부
- * @param {boolean} [remountMap=true] 네이버 지도 인스턴스를 새 테마로 재마운트할지 여부
+ * @param {boolean} isDark 다크 모드 여부
+ * @param {boolean} [remountMap=true] 네이버 지도를 새 테마로 재마운트할지 여부
  */
 function applyTheme(isDark, remountMap = true) {
     state.darkMode = Boolean(isDark);
+    const themeValue = state.darkMode ? 'dark' : 'light';
+
+    document.documentElement.dataset.theme = themeValue;
+    const colorSchemeMeta = document.querySelector('meta[name="color-scheme"]');
+    if (colorSchemeMeta) {
+        colorSchemeMeta.content = themeValue;
+    }
+
     document.body.classList.toggle('dark-mode', state.darkMode);
-    document.body.dataset.theme = state.darkMode ? 'dark' : 'light';
-    document.documentElement.style.colorScheme = state.darkMode ? 'dark' : 'light';
+    document.body.dataset.theme = themeValue;
 
     const toggleBtn = byId('theme-toggle');
     const moonIcon = byId('theme-icon-moon');
@@ -4559,7 +5843,7 @@ function applyTheme(isDark, remountMap = true) {
 
 /**
  * [함수 역할]
- * 검색 패널 내 다크모드 동그라미 토글 버튼(`#theme-toggle`) 클릭 이벤트를 초기화합니다.
+ * 테마 토글 버튼(`index.html`의 `#theme-toggle`) 클릭 이벤트를 초기화합니다.
  */
 function initThemeToggle() {
     applyTheme(true, false);
@@ -4568,6 +5852,15 @@ function initThemeToggle() {
     });
 }
 
+/**
+ * [함수 역할]
+ * 프론트엔드 애플리케이션의 **최초 실행 진입점(Main Entry Point)**입니다.
+ * - 파이썬에 비유하면 `if __name__ == "__main__": main()`과 같은 역할로,
+ *   `index.html` 파싱이 끝나자마자 `<script src="app.js" defer>`에 의해 파일 맨 마지막 줄에서 딱 1번 호출됩니다.
+ * - 테마·검색·반경·길찾기·모바일 반응형 레이아웃·안내 모달을 초기화한 뒤,
+ *   네이버 WebGL 지도를 마운트(`mountNaverMap`)하고 백엔드 병원 스냅샷(`loadData`), 역지오코딩(`updateOriginAddress`),
+ *   현재 GPS 위치(`locate`)를 비동기로 구동합니다.
+ */
 function init() {
     initThemeToggle();
     initSearchFocus();
@@ -4600,13 +5893,10 @@ function init() {
             byId('cluster-dialog').close();
             return;
         }
-        const first = state.clusterItems[0];
-        const bounds = new naver.maps.LatLngBounds(
-            new naver.maps.LatLng(first.lat, first.lng),
-            new naver.maps.LatLng(first.lat, first.lng)
-        );
-        for (const hospital of state.clusterItems) {
-            bounds.extend(new naver.maps.LatLng(hospital.lat, hospital.lng));
+        const firstPos = getHospitalLatLng(state.clusterItems[0]);
+        const bounds = new naver.maps.LatLngBounds(firstPos, firstPos);
+        for (let i = 1; i < state.clusterItems.length; i++) {
+            bounds.extend(getHospitalLatLng(state.clusterItems[i]));
         }
         byId('cluster-dialog').close();
         fitBounds(bounds);
@@ -4711,15 +6001,23 @@ function init() {
         return;
     }
 
-    // 네이버 지도(NAVER Maps v3) 인스턴스 초기화 (최초 기본: 다크 모드 customStyleId 적용)
+    // 네이버 지도(NAVER Maps v3 GL) 인스턴스 초기화 (최초 기본: 다크 모드 customStyleId 적용)
     mountNaverMap();
 
+    // 모바일 주소창 숨김/노출 및 창 크기 조절 시 프레임당 1회만 레이아웃을 동기화하도록 rAF 병합
+    let resizeRafId = 0;
     window.addEventListener('resize', () => {
-        syncResponsiveSheetLayout();
-        syncMobileMenuPlacement();
-        updateMarkers();
-        updateMarquees();
-    });
+        if (resizeRafId) {
+            return;
+        }
+        resizeRafId = requestAnimationFrame(() => {
+            resizeRafId = 0;
+            syncResponsiveSheetLayout();
+            syncMobileMenuPlacement();
+            updateMarkers();
+            updateMarquees();
+        });
+    }, { passive: true });
 
     byId('location-button').disabled = false;
     byId('refresh-button').disabled = false;
@@ -4734,6 +6032,11 @@ function init() {
     }
 }
 
+/**
+ * [함수 역할]
+ * URL 쿼리스트링(`?preview=detail`, `?preview=cluster`, `?preview=radius`, `?preview=notice`)을 통한
+ * UI 미리보기·디버깅 모드를 지원합니다.
+ */
 function handlePreviewMode(mode) {
     if (mode === 'notice') {
         return;

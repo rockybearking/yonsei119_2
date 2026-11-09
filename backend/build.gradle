@@ -3,13 +3,21 @@
  * [파일 역할]
  * 백엔드(Java Spring Boot) 모듈 Gradle 빌드 설정 파일 (backend/build.gradle)
  *
- * [담당 기능]
- * 1. Java 17 LTS 기반의 Spring Boot 웹 애플리케이션 의존성을 구성합니다.
- * 2. 모노레포의 `../frontend` 폴더(index.html, style.css, app.js, Assets)를
- *    빌드 시점에 백엔드 클래스패스(`static/`)로 자동 복사하여,
- *    Render 배포 환경에서 단일 실행형 JAR(`yonsei119-backend.jar`) 하나로
- *    프론트엔드와 백엔드 API를 동시에 서빙할 수 있도록 패키징합니다.
- * 3. IntelliJ IDEA에서 바로 실행(Run/Debug)할 수 있도록 작업 디렉터리와 UTF-8 인코딩을 고정합니다.
+ * [파이썬 장고(Django) 비유]
+ * - 장고 프로젝트의 `requirements.txt` / `pyproject.toml` + `collectstatic` 배포 스크립트를
+ *   하나로 합쳐 놓은 파일입니다.
+ * - `dependencies { ... }` 블록이 파이썬의 `requirements.txt` (설치할 패키지 목록) 역할이며,
+ *   `copyFrontendToStatic` 태스크가 장고의 `python manage.py collectstatic`처럼
+ *   프론트엔드 정적 파일들을 서버 배포 폴더 안으로 모아주는 역할을 합니다.
+ *
+ * [코드의 경로성 (어디서 오고 어디로 가는가?)]
+ * - [어디서 왔는가 (Incoming)] : 루트 `settings.gradle`(`include 'backend'`) 및 루트 `build.gradle`에서
+ *   이 파일을 읽어 `:backend` 모듈을 구성합니다.
+ * - [어디로 가는가 (Outgoing)] :
+ *   1) `../frontend/` 폴더의 `index.html`, `style.css`, `app.js`, `Assets/`를 읽어
+ *      빌드 시 `backend/build/resources/main/static/`으로 복사합니다 (`WebConfig.java`의 `classpath:/static/`과 연결).
+ *   2) `src/main/java/com/yonsei119/**`의 모든 `.java` 파일과 `src/main/resources/application.yml`을 컴파일하여
+ *      최종 실행 파일(`yonsei119-backend.jar`) 또는 로컬 서버(`Yonsei119Application`)를 띄웁니다.
  *
  * [수정 시 영향 및 예시]
  * - Java 버전을 21로 올리고 싶다면 `JavaLanguageVersion.of(17)`을 `21`로 변경합니다.
@@ -21,30 +29,43 @@
  * ============================================================================
  */
 plugins {
+    // Java 컴파일러 플러그인 활성화
     id 'java'
+    // Spring Boot 실행/패키징 플러그인 (장고 패키지 버전을 고정하는 것과 유사)
     id 'org.springframework.boot' version '4.1.2'
+    // Spring 관련 하위 라이브러리 버전을 호환되는 조합으로 자동 맞춰주는 플러그인
     id 'io.spring.dependency-management' version '1.1.7'
 }
 
 java {
     toolchain {
+        // JDK 17 버전을 사용하도록 고정합니다. (PC에 여러 JDK가 깔려 있어도 17을 자동 선택)
         languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
+/*
+ * [의존성 목록 — 파이썬의 requirements.txt 역할]
+ * - 새로운 라이브러리(예: 데이터베이스 JPA, Redis 캐시 등)를 쓰고 싶다면 여기에 한 줄 추가합니다.
+ *   예시(변경 전):
+ *     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+ *   예시(변경 후 - Spring Validation 추가 시):
+ *     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+ *     implementation 'org.springframework.boot:spring-boot-starter-validation'
+ */
 dependencies {
-    // Spring MVC 웹 서버 및 REST API, 정적 리소스 서빙 지원
+    // Spring MVC 내장 Tomcat 웹 서버 + REST API(@RestController) + JSON 직렬화(Jackson) + 정적 파일 서빙 지원
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 
-    // JUnit 5 및 Spring Boot 통합 테스트 지원
+    // JUnit 5 단위/통합 테스트 지원 (`src/test/java/com/yonsei119/Yonsei119BackendTests.java` 실행에 사용)
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 /*
- * [기능 설명]
- * 모든 Java 컴파일 단계에서 UTF-8 인코딩과 메서드 파라미터 이름 보존(-parameters)을 활성화합니다.
- * 이를 건들면 한글 주석이나 문자열이 Windows 기본 인코딩(MS949)에서 깨질 수 있습니다.
+ * [기능 설명] Java 소스 컴파일 인코딩 및 파라미터 이름 보존 설정
+ * - UTF-8을 강제하여 Windows 기본 인코딩(CP949/MS949) 환경에서도 한글 주석/문자열이 깨지지 않게 합니다.
+ * - `-parameters` 플래그는 `EmergencyApiController.java`의 `@RequestParam` 파라미터 이름을 리플렉션으로 읽을 때 도움을 줍니다.
  */
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
@@ -55,18 +76,17 @@ tasks.withType(Javadoc).configureEach {
     options.encoding = 'UTF-8'
 }
 
-// [기능 설명]
-// 모노레포의 `frontend/` 디렉터리에 있는 정적 웹 파일(index.html, style.css, app.js, Assets/ 등)을
-// 백엔드 빌드 리소스 폴더(`build/resources/main/static`)로 복사하는 태스크입니다.
-//
-// [수정 시 영향 및 예시]
-// - 프론트엔드에 새 폴더(예: `frontend/icons/`)를 추가하더라도 `from('../frontend')` 전체를
-//   복사하므로 별도 수정 없이 자동 반영됩니다.
-// - 만약 특정 임시 파일(예: `.bak` 확장자)을 배포에서 제외하고 싶다면 아래와 같이 `exclude`를 추가합니다:
-//   예시:
-//     from('../frontend') {
-//         exclude '**/*.bak', '**/.DS_Store'
-//     }
+/*
+ * [태스크 역할] 프론트엔드 정적 파일 자동 번들링 (장고의 `collectstatic` 역할)
+ * - [어디서 읽어오는가] `../frontend` (`C:\Users\rocky\IdeaProjects\yonsei119\frontend`)
+ * - [어디로 복사하는가] `backend/build/resources/main/static` (JAR 내부에서는 `classpath:/static/`)
+ * - [누가 서빙하는가] `config/WebConfig.java`의 `addResourceHandlers()`가 이 경로를 브라우저에 전달합니다.
+ *
+ * [수정 시 영향 및 예시]
+ * - 특정 개발용 임시 파일(예: `.bak` 파일이나 `.map` 소스맵)을 배포 JAR에서 빼고 싶다면 `exclude`에 패턴을 추가합니다:
+ *   예시(변경 전): exclude '** /.DS_Store', '** /Thumbs.db'
+ *   예시(변경 후): exclude '** /.DS_Store', '** /Thumbs.db', '** /*.bak'
+ */
 tasks.register('copyFrontendToStatic', Copy) {
     description = 'Copies frontend static files into backend static resources for single-JAR deployment.'
     from('../frontend') {
@@ -75,32 +95,37 @@ tasks.register('copyFrontendToStatic', Copy) {
     into layout.buildDirectory.dir('resources/main/static')
 }
 
+// 리소스 처리 단계(`processResources`)가 실행될 때 반드시 위 `copyFrontendToStatic`이 먼저 실행되도록 연결합니다.
 tasks.named('processResources') {
     dependsOn('copyFrontendToStatic')
 }
 
 /*
- * [기능 설명]
- * Render 클라우드 및 Docker 컨테이너 배포 시 고정된 파일명(`yonsei119-backend.jar`)으로
- * 실행 가능한 Fat JAR를 생성합니다. 일반 plain JAR 생성은 비활성화하여 혼선을 방지합니다.
+ * [기능 설명] 실행 가능한 단일 배포 파일(Fat JAR) 생성 설정
+ * - Render 클라우드나 Docker에서 `java -jar yonsei119-backend.jar` 한 줄로 실행할 수 있게 파일명을 고정합니다.
  */
 tasks.named('bootJar') {
     archiveFileName = 'yonsei119-backend.jar'
 }
 
+// 의존성이 빠진 껍데기 JAR(`*-plain.jar`)는 배포 시 혼동을 주므로 생성하지 않습니다.
 tasks.named('jar') {
     enabled = false
 }
 
 /*
- * [기능 설명]
- * IntelliJ IDEA 또는 CLI에서 `bootRun` 실행 시 모노레포 루트 폴더를 작업 디렉터리로 지정하여
- * `frontend/` 파일 수정 시 재빌드 없이도 즉시 반영될 수 있게 설정합니다.
+ * [기능 설명] 로컬 개발 서버(`bootRun`) 실행 시 작업 폴더(Working Directory) 고정
+ * - 모노레포 루트(`yonsei119/`)를 기준 디렉터리로 잡아서 `WebConfig.java`의 `file:./frontend/` 경로가
+ *   정확히 `frontend/` 폴더를 가리키게 합니다. 덕분에 프론트엔드 HTML/CSS/JS 수정 후 서버 재시작 없이
+ *   브라우저 새로고침만으로 변경사항을 즉시 확인할 수 있습니다.
  */
 tasks.named('bootRun') {
     workingDir = rootProject.projectDir
 }
 
+/*
+ * [기능 설명] `./gradlew test` 실행 시 JUnit 5 플랫폼으로 `Yonsei119BackendTests.java`를 구동합니다.
+ */
 tasks.named('test') {
     useJUnitPlatform()
 }
