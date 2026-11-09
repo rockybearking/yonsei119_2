@@ -107,16 +107,9 @@ yonsei119/
 * **\[실시간 도로 주행 소요시간(ETA) + 현재 잔여 병상 수 + 증상별 처치 가능 여부 + 현장 긴급 공지\]**를 종합 연산하는 **위치 기반 실시간 응급의료 최적 추천 서비스**를 구축합니다.
 * AI 생성 코드의 오류를 극복하고 원시 데이터의 무결성을 확보하여, 응급환자와 의료진 모두에게 가장 신뢰할 수 있는 정보를 제공합니다.
 
-```mermaid
-%%{init: {'flowchart': {'wrappingWidth': 480, 'minNodeWidth': 200}}}%%
-flowchart TD
-    GPS["사용자 현 위치 (GPS)"] --> Radius["탐색 반경 및 종별 필터<br>(5km ~ 전국 / 상급종합·권역·의료원)"]
-    OpenAPI["국립중앙의료원 7대 API<br>(병상 / 중증질환 / 긴급공지)"] --> Backend["Spring Boot 백엔드 엔진<br>• 7대 XML 병렬 수집 & 메모리 캐싱<br>• 결측치 '-' 및 음수 초과수용 보존<br>• 실시간 공지-질환 교차 검증"]
-    NaverAPI["네이버 Directions 5 / 15 API<br>(실시간 교통 반영 자동차 경로)"] --> Backend
-    Radius --> Dashboard["실시간 응급의료 관제 대시보드"]
-    Backend --> Dashboard
-    Dashboard --> NaverMap["네이버 지도(v3) 시각화<br>(병원 상태 카드 · 주행 경로선 · 예상 소요시간)"]
-```
+<div align="center">
+  <img src="./frontend/Assets/core_goal_diagram.png" width="100%" alt="핵심 목표 다이어그램" />
+</div>
 
 ---
 
@@ -150,34 +143,9 @@ flowchart TD
 
 ### 1. 백엔드-프론트엔드 통합 아키텍처
 
-```mermaid
-%%{init: {'flowchart': {'wrappingWidth': 480, 'minNodeWidth': 200}}}%%
-flowchart TD
-    subgraph Browser["프론트엔드 (frontend/)"]
-        UI["네이버 지도(v3) & 상세 관제 바텀시트<br>반경 원 · 병원 카드 · 주행 경로선 · 병상/질환 보드"]
-    end
-
-    subgraph SpringBoot["백엔드 서버 (backend/ - Java Spring Boot)"]
-        Controller["EmergencyApiController<br>(/api/hospitals · /api/directions · /api/config)"]
-        Cache["EmergencyDataService<br>(HPID 교차병합 & 45초 주기 자동갱신 캐시)"]
-        Classifier["HospitalClassifier<br>(제5기 상급종합 47개소 · 권역 · 의료원 분류)"]
-        XmlClient["NmcOpenApiClient<br>(7대 공공데이터 비동기 병렬 XML 수집)"]
-        NaverSvc["NaverDirectionsService<br>(Directions 5 & 15 경로·소요시간 연산)"]
-    end
-
-    subgraph ExternalAPIs["외부 연동 API"]
-        NEMC["국립중앙의료원(NEMC)<br>7대 응급의료 OpenAPI"]
-        NCP["네이버 클라우드 플랫폼(NCP)<br>Directions 5 & Directions 15"]
-    end
-
-    UI <--> Controller
-    Controller --> Cache
-    Cache --> Classifier
-    Cache --> XmlClient
-    XmlClient --> NEMC
-    Controller --> NaverSvc
-    NaverSvc --> NCP
-```
+<div align="center">
+  <img src="./frontend/Assets/architecture_diagram.png" width="100%" alt="백엔드-프론트엔드 통합 아키텍처" />
+</div>
 
 ### 2. 백엔드 내부 REST API 명세 (`EmergencyApiController`)
 
