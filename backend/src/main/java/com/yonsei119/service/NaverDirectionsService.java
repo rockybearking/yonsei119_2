@@ -2,6 +2,10 @@ package com.yonsei119.service;
 
 import com.yonsei119.config.Yonsei119Properties;
 import com.yonsei119.dto.DirectionsResponseDto;
+import com.yonsei119.dto.GeocodeResponseDto;
+import com.yonsei119.dto.HospitalDto;
+import com.yonsei119.dto.HospitalEtaRankDto;
+import com.yonsei119.dto.ReverseGeocodeResponseDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -17,36 +21,31 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 /**
  * ============================================================================
  * [클래스 역할]
- * 네이버 클라우드 플랫폼(NCP)의 **Directions 5** 및 **Directions 15** 자동차 경로 탐색 API를
- * 백엔드에서 안전하게 호출하여 예상 소요 시간(ETA), 주행 거리, 통행료/택시비/유류비,
- * 그리고 지도 폴리라인(`path`) 좌표열과 구간별 실시간 교통 혼잡도(`section`)를 반환하는 서비스입니다.
+ * 네이버 클라우드 플랫폼(NCP)의 **Directions 5**, **Directions 15**, **Reverse Geocoding**,
+ * **Geocoding** API를 백엔드에서 안전하게 호출하고 캐싱하는 통합 위치·경로 서비스입니다.
  * <p>
  * [담당 기능]
- * 1. **Directions 5 (`directions5`)**:
- *    - 엔드포인트: {@code https://maps.apigw.ntruss.com/map-direction/v1/driving}
- *    - 특징: 출발지 -> 목적지(최대 경유지 5곳) 실시간 빠른길/최적 경로 및 예상 소요 시간 조회에 최적화.
- * 2. **Directions 15 (`directions15`)**:
- *    - 엔드포인트: {@code https://maps.apigw.ntruss.com/map-direction-15/v1/driving}
- *    - 특징: 출발지 -> 목적지(최대 경유지 15곳) 다중 경유/광역 이송 경로 탐색 및 예상 소요 시간 조회 지원.
- * 3. 보안 보호:
- *    - NCP Client Secret(`X-NCP-APIGW-API-KEY`)을 브라우저에 노출하지 않고 백엔드 서버 헤더로만 전송합니다.
- * 4. 단기 인메모리 캐시(60초):
- *    - 동일한 출발지/목적지/옵션으로 반복 조회 시 60초 동안 캐시된 경로를 즉시 반환하여
- *      응답 속도를 높이고 NCP API 호출 쿼터를 절약합니다.
- * <p>
- * [수정 시 영향 및 예시]
- * - 새로운 탐색 옵션(예: `traavoidcaronly` 자동차전용도로 회피)의 한글 라벨을 바꾸고 싶다면
- *   {@link #OPTION_LABELS} 맵의 값을 수정하면 프론트엔드 UI에 자동 반영됩니다.
- *   예시(변경 전): {@code "trafast", "실시간 빠른길"}
- *   예시(변경 후): {@code "trafast", "응급 최단시간(실시간)"}
+ * 1. **Directions 5 / 15 다중 옵션 동시 조회 (`trafast:traoptimal:traavoidtoll`)**:
+ *    - 1회 API 호출로 최대 3개 주행 옵션(실시간 빠른길·실시간 최적·무료 우선 등)을 동시에 받아와
+ *      옵션 비교 요약(`alternatives`)을 제공하고, 각 옵션별 경로를 모두 인메모리 캐시에 저장합니다.
+ * 2. **주변 후보 병원 실도로 소요시간(ETA) 병렬 비교 (`rankHospitalsByDrivingTime`)**:
+ *    - 단순 직선거리가 아닌 실제 도로 주행 소요시간 기준으로 주변 응급실을 병렬 조회·정렬합니다.
+ * 3. **Reverse Geocoding (`reverseGeocode`) & Geocoding (`geocode`)**:
+ *    - 좌표 -> 행정동/도로명 주소 변환 및 주소/지역명 -> 좌표 변환을 수행합니다.
  * ============================================================================
  */
 @Service
@@ -57,6 +56,12 @@ public class NaverDirectionsService {
     /** 동일 경로 재조회 시 캐시 유지 시간(초) */
     private static final long ROUTE_CACHE_TTL_SECONDS = 60L;
 
+    /** 지오코딩/리버스지오코딩 캐시 유지 시간(초) */
+    private static final long GEOCODE_CACHE_TTL_SECONDS = 600L;
+
+    private static final String REVERSE_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-reversegeocode/v2/gc";
+    private static final String GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode";
+
     /** 네이버 Directions API 지원 탐색 옵션 코드 -> 한글 표시 라벨 맵 */
     public static final Map<String, String> OPTION_LABELS = Map.of(
             "trafast", "실시간 빠른길",
@@ -66,10 +71,16 @@ public class NaverDirectionsService {
             "traavoidcaronly", "자동차전용 회피"
     );
 
+    /** 네이버 Directions API 4대 핵심 탐색 옵션 목록 (실시간 빠른길·실시간 최적·실시간 편한길·무료 우선) */
+    private static final List<String> ALL_FOUR_OPTIONS = List.of(
+            "trafast", "traoptimal", "tracomfort", "traavoidtoll"
+    );
+
     private final Yonsei119Properties properties;
     private final HttpClient httpClient;
     private final JsonMapper jsonMapper;
     private final ConcurrentHashMap<String, CachedRoute> routeCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CachedReverseGeocode> reverseGeocodeCache = new ConcurrentHashMap<>();
 
     public NaverDirectionsService(Yonsei119Properties properties) {
         this.properties = properties;
@@ -85,19 +96,8 @@ public class NaverDirectionsService {
      * 선택한 API 종류(`directions5` 또는 `directions15`), 경로 탐색 옵션(`trafast` 등),
      * 선택적 경유지(`waypoints`)를 받아 네이버 자동차 경로 탐색 결과를 반환합니다.
      * <p>
-     * [주의사항]
-     * 네이버 Directions API는 좌표 파라미터를 반드시 **`경도,위도` (`lng,lat`)** 순서로 받습니다.
-     * 이 메서드 내부에서 `String.format(Locale.US, "%.6f,%.6f", startLng, startLat)` 형태로
-     * 안전하게 변환하여 호출합니다.
-     *
-     * @param startLat  출발지 WGS84 위도
-     * @param startLng  출발지 WGS84 경도
-     * @param goalLat   목적지(병원) WGS84 위도
-     * @param goalLng   목적지(병원) WGS84 경도
-     * @param apiType   사용할 API 구분 (`"directions5"` 또는 `"directions15"`)
-     * @param option    탐색 옵션 (`"trafast"`, `"traoptimal"`, `"tracomfort"`, `"traavoidtoll"`)
-     * @param waypoints 경유지 문자열 (선택사항, 형식: `"경도1,위도1|경도2,위도2"`)
-     * @return 정제된 {@link DirectionsResponseDto}
+     * 1회 호출 시 최대 3개 옵션(`trafast:traoptimal:traavoidtoll`)을 함께 요청하여
+     * 다른 옵션으로 전환할 때 추가 네트워크 호출 없이 캐시에서 즉시 응답합니다.
      */
     public DirectionsResponseDto getDrivingRoute(
             double startLat,
@@ -112,9 +112,7 @@ public class NaverDirectionsService {
         String normalizedOption = normalizeOption(option);
         String safeWaypoints = waypoints != null ? waypoints.trim() : "";
 
-        String cacheKey = String.format(
-                Locale.US,
-                "%s|%s|%.5f,%.5f|%.5f,%.5f|%s",
+        String cacheKey = buildRouteCacheKey(
                 normalizedApi, normalizedOption, startLat, startLng, goalLat, goalLng, safeWaypoints
         );
 
@@ -129,50 +127,81 @@ public class NaverDirectionsService {
         String apiLabel = "directions15".equals(normalizedApi) ? "Directions 15" : "Directions 5";
         String optionLabel = OPTION_LABELS.getOrDefault(normalizedOption, "실시간 빠른길");
 
+        // 네이버 Directions API는 1회 요청당 최대 3개 옵션까지 콜론(:) 구분자로 동시 조회를 지원하므로,
+        // 4대 핵심 옵션(실시간 빠른길·실시간 최적·실시간 편한길·무료 우선) 전체를 한 번에 비교할 수 있도록
+        // [배치 1: trafast:traoptimal:tracomfort] + [배치 2: traavoidtoll] 2건을 비동기 병렬 호출하여 병합합니다.
+        Set<String> allRequestedOptions = new LinkedHashSet<>(ALL_FOUR_OPTIONS);
+        allRequestedOptions.add(normalizedOption);
+
+        String batch1Options = "trafast:traoptimal:tracomfort";
+        String batch2Options = "traavoidcaronly".equals(normalizedOption)
+                ? "traavoidtoll:traavoidcaronly"
+                : "traavoidtoll";
+
         String startParam = String.format(Locale.US, "%.6f,%.6f", startLng, startLat);
         String goalParam = String.format(Locale.US, "%.6f,%.6f", goalLng, goalLat);
 
-        StringBuilder urlBuilder = new StringBuilder(baseEndpoint)
-                .append("?start=").append(URLEncoder.encode(startParam, StandardCharsets.UTF_8))
-                .append("&goal=").append(URLEncoder.encode(goalParam, StandardCharsets.UTF_8))
-                .append("&option=").append(URLEncoder.encode(normalizedOption, StandardCharsets.UTF_8));
-
-        if (!safeWaypoints.isEmpty()) {
-            urlBuilder.append("&waypoints=").append(URLEncoder.encode(safeWaypoints, StandardCharsets.UTF_8));
-        }
-
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(urlBuilder.toString()))
-                    .timeout(Duration.ofSeconds(10))
-                    .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
-                    .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(
-                    request,
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            CompletableFuture<HttpResponse<String>> future1 = CompletableFuture.supplyAsync(
+                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch1Options, safeWaypoints)
+            );
+            CompletableFuture<HttpResponse<String>> future2 = CompletableFuture.supplyAsync(
+                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch2Options, safeWaypoints)
             );
 
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.warn("네이버 {} HTTP 오류: status={}, body={}",
-                        apiLabel, response.statusCode(), response.body());
+            HttpResponse<String> response1 = future1.join();
+            HttpResponse<String> response2 = future2.join();
+
+            HttpResponse<String> primaryResponse = (response1 != null && response1.statusCode() >= 200 && response1.statusCode() < 300)
+                    ? response1
+                    : response2;
+
+            if (primaryResponse == null) {
                 return createErrorResponse(
                         normalizedApi, apiLabel, normalizedOption, optionLabel,
-                        response.statusCode(),
-                        "네이버 경로 탐색 서버 응답 오류 (HTTP " + response.statusCode() + ")"
+                        -1,
+                        "경로 탐색 요청 중 네트워크 오류가 발생했습니다."
                 );
             }
 
-            DirectionsResponseDto parsed = parseDirectionsJson(
-                    response.body(), normalizedApi, apiLabel, normalizedOption, optionLabel
-            );
-            if (parsed.code() == 0 && !parsed.path().isEmpty()) {
-                routeCache.put(cacheKey, new CachedRoute(parsed, Instant.now()));
+            if (primaryResponse.statusCode() < 200 || primaryResponse.statusCode() >= 300) {
+                log.warn("네이버 {} HTTP 오류: status={}, body={}",
+                        apiLabel, primaryResponse.statusCode(), primaryResponse.body());
+                return createErrorResponse(
+                        normalizedApi, apiLabel, normalizedOption, optionLabel,
+                        primaryResponse.statusCode(),
+                        "네이버 경로 탐색 서버 응답 오류 (HTTP " + primaryResponse.statusCode() + ")"
+                );
             }
-            return parsed;
+
+            String mergedBody = mergeDirectionsJsonBodies(
+                    response1 != null && response1.statusCode() >= 200 && response1.statusCode() < 300 ? response1.body() : null,
+                    response2 != null && response2.statusCode() >= 200 && response2.statusCode() < 300 ? response2.body() : null
+            );
+            Instant now = Instant.now();
+
+            // 병합된 응답에서 4대 옵션 전체를 각각 파싱하여 캐시에 선제 저장
+            for (String optKey : allRequestedOptions) {
+                String label = OPTION_LABELS.getOrDefault(optKey, "실시간 빠른길");
+                DirectionsResponseDto optDto = parseDirectionsJson(
+                        mergedBody, normalizedApi, apiLabel, optKey, label
+                );
+                if (optDto.code() == 0 && !optDto.path().isEmpty()) {
+                    String optCacheKey = buildRouteCacheKey(
+                            normalizedApi, optKey, startLat, startLng, goalLat, goalLng, safeWaypoints
+                    );
+                    routeCache.put(optCacheKey, new CachedRoute(optDto, now));
+                }
+            }
+
+            CachedRoute primaryCached = routeCache.get(cacheKey);
+            if (primaryCached != null) {
+                return primaryCached.response();
+            }
+
+            return parseDirectionsJson(
+                    mergedBody, normalizedApi, apiLabel, normalizedOption, optionLabel
+            );
         } catch (Exception ex) {
             log.error("네이버 {} 호출 중 예외 발생: {}", apiLabel, ex.getMessage(), ex);
             return createErrorResponse(
@@ -183,17 +212,86 @@ public class NaverDirectionsService {
         }
     }
 
+    private HttpResponse<String> sendDirectionsHttpRequest(
+            String baseEndpoint,
+            String startParam,
+            String goalParam,
+            String optionParam,
+            String safeWaypoints
+    ) {
+        try {
+            StringBuilder urlBuilder = new StringBuilder(baseEndpoint)
+                    .append("?start=").append(URLEncoder.encode(startParam, StandardCharsets.UTF_8))
+                    .append("&goal=").append(URLEncoder.encode(goalParam, StandardCharsets.UTF_8))
+                    .append("&option=").append(URLEncoder.encode(optionParam, StandardCharsets.UTF_8));
+
+            if (!safeWaypoints.isEmpty()) {
+                urlBuilder.append("&waypoints=").append(URLEncoder.encode(safeWaypoints, StandardCharsets.UTF_8));
+            }
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(urlBuilder.toString()))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
+                    .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+
+            return httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+        } catch (Exception ex) {
+            log.warn("네이버 Directions 배치 호출 실패 (option={}): {}", optionParam, ex.getMessage());
+            return null;
+        }
+    }
+
+    private String mergeDirectionsJsonBodies(String body1, String body2) {
+        if (body1 == null || body1.isBlank()) {
+            return body2 != null ? body2 : "{}";
+        }
+        if (body2 == null || body2.isBlank()) {
+            return body1;
+        }
+        try {
+            JsonNode root1 = jsonMapper.readTree(body1);
+            JsonNode root2 = jsonMapper.readTree(body2);
+            if (root1.path("route") instanceof tools.jackson.databind.node.ObjectNode routeObj1
+                    && root2.path("route") instanceof tools.jackson.databind.node.ObjectNode routeObj2) {
+                for (String fieldName : routeObj2.propertyNames()) {
+                    routeObj1.set(fieldName, routeObj2.get(fieldName));
+                }
+                return jsonMapper.writeValueAsString(root1);
+            }
+        } catch (Exception ex) {
+            log.debug("Directions 응답 병합 생략: {}", ex.getMessage());
+        }
+        return body1;
+    }
+
+    private static String buildRouteCacheKey(
+            String apiType,
+            String option,
+            double startLat,
+            double startLng,
+            double goalLat,
+            double goalLng,
+            String waypoints
+    ) {
+        return String.format(
+                Locale.US,
+                "%s|%s|%.5f,%.5f|%.5f,%.5f|%s",
+                apiType, option, startLat, startLng, goalLat, goalLng, waypoints
+        );
+    }
+
     /**
      * [메서드 역할]
      * 네이버 Directions 5 / 15 JSON 응답 본문을 파싱하여 {@link DirectionsResponseDto}로 변환합니다.
-     * 단위 테스트에서 JSON 파싱 로직을 독립 검증할 수 있도록 공개 메서드로 구성했습니다.
-     *
-     * @param jsonBody    네이버 API 원본 JSON 문자열
-     * @param apiType     `"directions5"` 또는 `"directions15"`
-     * @param apiLabel    `"Directions 5"` 또는 `"Directions 15"`
-     * @param option      요청한 탐색 옵션 코드
-     * @param optionLabel 탐색 옵션 한글 라벨
-     * @return 파싱된 {@link DirectionsResponseDto}
+     * 응답에 여러 탐색 옵션(`trafast`, `traoptimal`, `traavoidtoll` 등)이 함께 들어 있는 경우
+     * `alternatives` 비교 요약 리스트도 함께 생성합니다.
      */
     public DirectionsResponseDto parseDirectionsJson(
             String jsonBody,
@@ -212,9 +310,35 @@ public class NaverDirectionsService {
             }
 
             JsonNode routeNode = root.path("route");
+
+            // 응답 내 존재하는 모든 옵션 요약(alternatives) 추출
+            List<DirectionsResponseDto.RouteOptionSummaryDto> alternatives = new ArrayList<>();
+            List<String> optionOrder = List.of("trafast", "traoptimal", "tracomfort", "traavoidtoll", "traavoidcaronly");
+            for (String optKey : optionOrder) {
+                JsonNode arr = routeNode.path(optKey);
+                if (arr.isArray() && !arr.isEmpty()) {
+                    JsonNode sum = arr.get(0).path("summary");
+                    int distM = sum.path("distance").asInt(0);
+                    double distKm = Math.round((distM / 100.0)) / 10.0;
+                    long durMs = sum.path("duration").asLong(0L);
+                    int durMin = Math.max(1, (int) Math.round(durMs / 60000.0));
+                    alternatives.add(new DirectionsResponseDto.RouteOptionSummaryDto(
+                            optKey,
+                            OPTION_LABELS.getOrDefault(optKey, optKey),
+                            distM,
+                            distKm,
+                            durMs,
+                            durMin,
+                            formatDurationKorean(durMs),
+                            sum.path("tollFare").asInt(0),
+                            sum.path("taxiFare").asInt(0),
+                            sum.path("fuelPrice").asInt(0)
+                    ));
+                }
+            }
+
             JsonNode optionArray = routeNode.path(option);
             if (!optionArray.isArray() || optionArray.isEmpty()) {
-                // 요청한 옵션 키가 없으면 route 하위의 첫 번째 배열을 폴백으로 탐색
                 var fieldNames = routeNode.propertyNames();
                 for (String fieldName : fieldNames) {
                     JsonNode candidate = routeNode.path(fieldName);
@@ -292,7 +416,8 @@ public class NaverDirectionsService {
                     fuelPrice,
                     List.copyOf(path),
                     List.copyOf(sections),
-                    List.copyOf(guidePrompts)
+                    List.copyOf(guidePrompts),
+                    List.copyOf(alternatives)
             );
         } catch (Exception ex) {
             log.warn("네이버 Directions JSON 파싱 오류: {}", ex.getMessage());
@@ -305,24 +430,411 @@ public class NaverDirectionsService {
 
     /**
      * [메서드 역할]
+     * 기준 좌표(`startLat`, `startLng`) 주변의 후보 병원들에 대해 네이버 Directions 5 API를 병렬 호출하여
+     * **실제 자동차 도로 주행 시간(ETA)**이 가장 짧은 순서대로 정렬한 추천 목록을 반환합니다.
+     */
+    public List<HospitalEtaRankDto> rankHospitalsByDrivingTime(
+            List<HospitalDto> allHospitals,
+            double startLat,
+            double startLng,
+            double radiusKm,
+            int limit,
+            boolean includeOther
+    ) {
+        if (allHospitals == null || allHospitals.isEmpty()) {
+            return List.of();
+        }
+
+        int safeLimit = Math.max(1, Math.min(limit, 8));
+
+        // 1차 필터링: 반경 내 + 종별 필터 + 직선거리 기준 상위 후보 선별
+        List<HospitalDto> candidates = allHospitals.stream()
+                .filter(h -> {
+                    if (!includeOther && h.type() != null && "other".equals(h.type().group()) && !h.regional()) {
+                        return false;
+                    }
+                    if (radiusKm > 0) {
+                        return haversineKm(startLat, startLng, h.lat(), h.lng()) <= radiusKm;
+                    }
+                    return true;
+                })
+                .sorted(Comparator.comparingDouble(h -> haversineKm(startLat, startLng, h.lat(), h.lng())))
+                .limit(Math.min(safeLimit + 2, 8))
+                .toList();
+
+        // 반경 내 주요 병원이 없으면 전체 병원(일반 포함) 중 가장 가까운 곳들로 폴백
+        if (candidates.isEmpty()) {
+            candidates = allHospitals.stream()
+                    .sorted(Comparator.comparingDouble(h -> haversineKm(startLat, startLng, h.lat(), h.lng())))
+                    .limit(safeLimit)
+                    .toList();
+        }
+
+        List<CompletableFuture<HospitalEtaRankDto>> futures = candidates.stream()
+                .map(hospital -> CompletableFuture.supplyAsync(() -> {
+                    double straightKm = Math.round(haversineKm(startLat, startLng, hospital.lat(), hospital.lng()) * 10.0) / 10.0;
+                    DirectionsResponseDto route = getDrivingRoute(
+                            startLat, startLng, hospital.lat(), hospital.lng(),
+                            "directions5", "trafast", ""
+                    );
+
+                    String erBeds = hospital.beds() != null
+                            ? hospital.beds().getOrDefault("hvec", "")
+                            : "";
+                    String typeGroup = hospital.regional()
+                            ? "regional"
+                            : (hospital.type() != null ? hospital.type().group() : "other");
+                    String typeLabel = hospital.regional()
+                            ? "권역응급의료센터"
+                            : (hospital.type() != null ? hospital.type().label() : "응급의료기관");
+
+                    if (route.code() == 0 && route.durationMinutes() > 0) {
+                        return new HospitalEtaRankDto(
+                                0,
+                                hospital.id(),
+                                hospital.name(),
+                                typeGroup,
+                                typeLabel,
+                                hospital.regional(),
+                                erBeds,
+                                straightKm,
+                                route.distanceKm(),
+                                route.durationMinutes(),
+                                route.durationText(),
+                                route.tollFare(),
+                                route.taxiFare(),
+                                hospital.lat(),
+                                hospital.lng()
+                        );
+                    }
+                    // 경로 탐색 불가(섬 지역 등) 시 직선거리 기반 추정치 폴백
+                    int estMin = Math.max(2, (int) Math.round(straightKm * 1.8));
+                    return new HospitalEtaRankDto(
+                            0,
+                            hospital.id(),
+                            hospital.name(),
+                            typeGroup,
+                            typeLabel,
+                            hospital.regional(),
+                            erBeds,
+                            straightKm,
+                            straightKm,
+                            estMin,
+                            "약 " + estMin + "분(추정)",
+                            0,
+                            0,
+                            hospital.lat(),
+                            hospital.lng()
+                    );
+                }))
+                .toList();
+
+        List<HospitalEtaRankDto> sorted = futures.stream()
+                .map(CompletableFuture::join)
+                .sorted(Comparator
+                        .comparingInt(HospitalEtaRankDto::durationMinutes)
+                        .thenComparingDouble(HospitalEtaRankDto::drivingDistanceKm))
+                .limit(safeLimit)
+                .toList();
+
+        AtomicInteger rankCounter = new AtomicInteger(1);
+        return sorted.stream()
+                .map(item -> new HospitalEtaRankDto(
+                        rankCounter.getAndIncrement(),
+                        item.id(),
+                        item.name(),
+                        item.typeGroup(),
+                        item.typeLabel(),
+                        item.regional(),
+                        item.erBeds(),
+                        item.straightDistanceKm(),
+                        item.drivingDistanceKm(),
+                        item.durationMinutes(),
+                        item.durationText(),
+                        item.tollFare(),
+                        item.taxiFare(),
+                        item.lat(),
+                        item.lng()
+                ))
+                .toList();
+    }
+
+    /**
+     * [메서드 역할]
+     * 네이버 클라우드 플랫폼 Reverse Geocoding API (`map-reversegeocode/v2/gc`)를 호출하여
+     * 위경도 좌표를 한국어 행정동/도로명/지번 주소로 변환합니다.
+     */
+    public ReverseGeocodeResponseDto reverseGeocode(double lat, double lng) {
+        String cacheKey = String.format(Locale.US, "%.4f,%.4f", lat, lng);
+        CachedReverseGeocode cached = reverseGeocodeCache.get(cacheKey);
+        if (cached != null && Instant.now().isBefore(cached.createdAt().plusSeconds(GEOCODE_CACHE_TTL_SECONDS))) {
+            return cached.response();
+        }
+
+        String coordsParam = String.format(Locale.US, "%.6f,%.6f", lng, lat);
+        String url = REVERSE_GEOCODE_URL
+                + "?coords=" + URLEncoder.encode(coordsParam, StandardCharsets.UTF_8)
+                + "&output=json&orders=roadaddr,addr,admcode";
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(8))
+                    .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
+                    .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                ReverseGeocodeResponseDto parsed = parseReverseGeocodeJson(response.body(), lat, lng);
+                if (parsed.code() == 0) {
+                    reverseGeocodeCache.put(cacheKey, new CachedReverseGeocode(parsed, Instant.now()));
+                }
+                return parsed;
+            }
+        } catch (Exception ex) {
+            log.warn("네이버 Reverse Geocoding 호출 오류: {}", ex.getMessage());
+        }
+
+        String fallbackCoord = String.format(Locale.US, "위도 %.4f, 경도 %.4f", lat, lng);
+        return new ReverseGeocodeResponseDto(-1, "주소 변환 실패", lat, lng, fallbackCoord, fallbackCoord, "", "");
+    }
+
+    public ReverseGeocodeResponseDto parseReverseGeocodeJson(String jsonBody, double lat, double lng) {
+        try {
+            JsonNode root = jsonMapper.readTree(jsonBody);
+            int code = root.path("status").path("code").asInt(-1);
+            String message = root.path("status").path("message").asString("");
+
+            JsonNode results = root.path("results");
+            if (code != 0 || !results.isArray() || results.isEmpty()) {
+                String coordLabel = String.format(Locale.US, "위도 %.4f, 경도 %.4f", lat, lng);
+                return new ReverseGeocodeResponseDto(code, message, lat, lng, coordLabel, coordLabel, "", "");
+            }
+
+            String shortAddr = "";
+            String roadAddr = "";
+            String jibunAddr = "";
+
+            for (JsonNode item : results) {
+                String name = item.path("name").asString("");
+                JsonNode region = item.path("region");
+                String a1 = region.path("area1").path("name").asString("").trim();
+                String a1Short = region.path("area1").path("alias").asString(a1).trim();
+                String a2 = region.path("area2").path("name").asString("").trim();
+                String a3 = region.path("area3").path("name").asString("").trim();
+                String a4 = region.path("area4").path("name").asString("").trim();
+
+                String regionPrefix = String.join(" ", Stream.of(a1, a2, a3, a4)
+                        .filter(s -> !s.isEmpty()).toList());
+                if (shortAddr.isEmpty() && !regionPrefix.isEmpty()) {
+                    shortAddr = String.join(" ", Stream.of(a1Short.isEmpty() ? a1 : a1Short, a2, a3)
+                            .filter(s -> !s.isEmpty()).toList());
+                }
+
+                JsonNode land = item.path("land");
+                if ("roadaddr".equals(name)) {
+                    String roadName = land.path("name").asString("").trim();
+                    String num1 = land.path("number1").asString("").trim();
+                    String num2 = land.path("number2").asString("").trim();
+                    String bldg = land.path("addition0").path("value").asString("").trim();
+                    String numPart = num2.isEmpty() ? num1 : (num1 + "-" + num2);
+                    roadAddr = String.join(" ", Stream.of(a1, a2, roadName, numPart, bldg)
+                            .filter(s -> !s.isEmpty()).toList());
+                } else if ("addr".equals(name)) {
+                    String num1 = land.path("number1").asString("").trim();
+                    String num2 = land.path("number2").asString("").trim();
+                    String numPart = num2.isEmpty() ? num1 : (num1 + "-" + num2);
+                    jibunAddr = String.join(" ", Stream.of(regionPrefix, numPart)
+                            .filter(s -> !s.isEmpty()).toList());
+                }
+            }
+
+            String fullAddr = !roadAddr.isEmpty() ? roadAddr : (!jibunAddr.isEmpty() ? jibunAddr : shortAddr);
+            if (shortAddr.isEmpty()) {
+                shortAddr = fullAddr;
+            }
+
+            return new ReverseGeocodeResponseDto(
+                    0,
+                    "ok",
+                    lat,
+                    lng,
+                    shortAddr,
+                    fullAddr,
+                    roadAddr,
+                    jibunAddr
+            );
+        } catch (Exception ex) {
+            String coordLabel = String.format(Locale.US, "위도 %.4f, 경도 %.4f", lat, lng);
+            return new ReverseGeocodeResponseDto(-2, ex.getMessage(), lat, lng, coordLabel, coordLabel, "", "");
+        }
+    }
+
+    /**
+     * [메서드 역할]
+     * 네이버 클라우드 플랫폼 Geocoding API (`map-geocode/v2/geocode`)를 호출하여
+     * 입력된 주소/지역명을 위경도 좌표로 변환합니다.
+     * 도로명/지번 주소 외에 기관명이나 랜드마크 검색어도 찾을 수 있도록 병원 주소록 및 Nominatim 폴백을 함께 지원합니다.
+     */
+    public GeocodeResponseDto geocode(String query, List<HospitalDto> hospitals) {
+        String safeQuery = query != null ? query.trim() : "";
+        if (safeQuery.isEmpty()) {
+            return new GeocodeResponseDto(-1, "", List.of());
+        }
+
+        List<GeocodeResponseDto.GeocodeItemDto> results = new ArrayList<>();
+
+        // 1. 네이버 클라우드 플랫폼 Geocoding API 호출
+        try {
+            String url = GEOCODE_URL + "?query=" + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(8))
+                    .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
+                    .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                results.addAll(parseGeocodeJson(response.body()));
+            }
+        } catch (Exception ex) {
+            log.warn("네이버 Geocoding 호출 오류: {}", ex.getMessage());
+        }
+
+        // 2. 병원 데이터 내 주소/이름 매칭 보완
+        if (hospitals != null && results.size() < 5) {
+            String compactQuery = safeQuery.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+            for (HospitalDto h : hospitals) {
+                String name = h.name() != null ? h.name() : "";
+                String addr = h.address() != null ? h.address() : "";
+                if (name.replaceAll("\\s+", "").toLowerCase(Locale.ROOT).contains(compactQuery)
+                        || addr.replaceAll("\\s+", "").toLowerCase(Locale.ROOT).contains(compactQuery)) {
+                    results.add(new GeocodeResponseDto.GeocodeItemDto(
+                            name,
+                            addr,
+                            addr,
+                            h.lat(),
+                            h.lng()
+                    ));
+                    if (results.size() >= 6) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. 랜드마크/장소명(예: "원주시청", "강릉역") 검색 시 결과가 없으면 Nominatim 보조 조회
+        if (results.isEmpty()) {
+            try {
+                String nomUrl = "https://nominatim.openstreetmap.org/search?format=json&limit=4&countrycodes=kr&accept-language=ko&q="
+                        + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
+                HttpRequest nomReq = HttpRequest.newBuilder()
+                        .uri(URI.create(nomUrl))
+                        .timeout(Duration.ofSeconds(6))
+                        .header("User-Agent", "Yonsei119-Emergency-Service/1.0")
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+                HttpResponse<String> nomRes = httpClient.send(
+                        nomReq,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                );
+                if (nomRes.statusCode() == 200) {
+                    JsonNode arr = jsonMapper.readTree(nomRes.body());
+                    if (arr.isArray()) {
+                        for (JsonNode item : arr) {
+                            double lat = item.path("lat").asDouble(0.0);
+                            double lng = item.path("lon").asDouble(0.0);
+                            String displayName = item.path("display_name").asString("").trim();
+                            String name = item.path("name").asString(safeQuery).trim();
+                            if (lat > 32.0 && lat < 39.5 && lng > 124.0 && lng < 132.0) {
+                                results.add(new GeocodeResponseDto.GeocodeItemDto(
+                                        name.isEmpty() ? safeQuery : name,
+                                        displayName,
+                                        displayName,
+                                        lat,
+                                        lng
+                                ));
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                log.debug("보조 지오코딩 조회 생략: {}", ex.getMessage());
+            }
+        }
+
+        return new GeocodeResponseDto(results.isEmpty() ? 404 : 0, safeQuery, List.copyOf(results));
+    }
+
+    public List<GeocodeResponseDto.GeocodeItemDto> parseGeocodeJson(String jsonBody) {
+        List<GeocodeResponseDto.GeocodeItemDto> list = new ArrayList<>();
+        try {
+            JsonNode root = jsonMapper.readTree(jsonBody);
+            JsonNode addresses = root.path("addresses");
+            if (addresses.isArray()) {
+                for (JsonNode item : addresses) {
+                    String road = item.path("roadAddress").asString("").trim();
+                    String jibun = item.path("jibunAddress").asString("").trim();
+                    double lng = Double.parseDouble(item.path("x").asString("0"));
+                    double lat = Double.parseDouble(item.path("y").asString("0"));
+                    if (lat > 32.0 && lat < 39.5 && lng > 124.0 && lng < 132.0) {
+                        String title = !road.isEmpty() ? road : jibun;
+                        list.add(new GeocodeResponseDto.GeocodeItemDto(title, road, jibun, lat, lng));
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Geocoding JSON 파싱 오류: {}", ex.getMessage());
+        }
+        return list;
+    }
+
+    private static double haversineKm(double lat1, double lng1, double lat2, double lng2) {
+        double r = 6371.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLng = Math.toRadians(lng2 - lng1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    /**
+     * [메서드 역할]
      * 밀리초(`durationMs`) 단위의 예상 소요 시간을 사람이 읽기 쉬운 한국어 시간 문자열로 변환합니다.
-     * <p>
-     * [수정 시 영향 및 예시]
-     * - 입력: `840000L` (14분) -> 출력: `"약 14분"`
-     * - 입력: `4320000L` (72분) -> 출력: `"약 1시간 12분"`
-     *
-     * @param durationMs 소요 시간(밀리초)
-     * @return 한국어 소요 시간 텍스트
      */
     public static String formatDurationKorean(long durationMs) {
         if (durationMs <= 0) {
             return "약 1분 미만";
         }
-        int totalMinutes = Math.max(1, (int) Math.round(durationMs / 60000.0));
+        int totalSeconds = (int) Math.round(durationMs / 1000.0);
+        if (totalSeconds < 60) {
+            return "약 " + Math.max(1, totalSeconds) + "초";
+        }
+        int totalMinutes = totalSeconds / 60;
+        int seconds = totalSeconds % 60;
         int hours = totalMinutes / 60;
         int minutes = totalMinutes % 60;
         if (hours <= 0) {
-            return "약 " + minutes + "분";
+            if (seconds == 0) {
+                return "약 " + minutes + "분";
+            }
+            return String.format("약 %d분 %d초", minutes, seconds);
         }
         if (minutes == 0) {
             return "약 " + hours + "시간";
@@ -345,20 +857,6 @@ public class NaverDirectionsService {
         return OPTION_LABELS.containsKey(lower) ? lower : "trafast";
     }
 
-    /**
-     * [메서드 역할]
-     * 네이버 Directions API의 `section`(대표 도로 3개 요약)과 `guide`(전 구간 세부 분기점별 거리·실시간 소요시간)를
-     * 결합하여 출발지(0번 좌표)부터 목적지(마지막 좌표)까지 누락 없는 고정밀 실시간 혼잡도 구간 리스트를 생성합니다.
-     * <p>
-     * [개선 배경]
-     * - 네이버 API의 `section` 배열은 전체 경로 중 거리가 가장 긴 대표 도로 3개만 평균값으로 내려주므로,
-     *   지방 -> 서울 대학병원 경로 조회 시 고속도로 3개만 표시되고 서울 시내 진입 후 정체 구간이 통째로 누락되거나,
-     *   시내 주행 시 출발·도착 부근의 병목 정체 구간이 빠지는 한계가 있습니다.
-     * - 반면 `guide` 배열은 모든 교차로·고가차도·지하차도 구간마다 정확한 `pointIndex`, `distance`(m),
-     *   `duration`(실시간 소요시간 ms)을 포함하므로, 구간별 실제 주행 속도(km/h)를 역산하여
-     *   일반도로(정체 16km/h 미만, 서행 30km/h 미만) 및 고속화도로(정체 40km/h 미만, 서행 70km/h 미만) 기준의
-     *   실시간 혼잡도를 네이버 지도 앱 수준으로 정밀하게 복원합니다.
-     */
     private static List<DirectionsResponseDto.RouteSectionDto> buildDetailedSections(
             JsonNode sectionNode,
             JsonNode guideNode
@@ -429,7 +927,6 @@ public class NaverDirectionsService {
             return rawSections;
         }
 
-        // 원본 section 배열에 명시된 서행(2)·정체(3) 구간도 함께 보존하여 누락 방지
         for (DirectionsResponseDto.RouteSectionDto raw : rawSections) {
             if (raw.congestion() >= 2) {
                 detailed.add(raw);
@@ -483,20 +980,20 @@ public class NaverDirectionsService {
     private static int classifyCongestionBySpeed(int speedKmh, boolean expressway) {
         if (expressway) {
             if (speedKmh < 40) {
-                return 3; // 고속도로/도시고속도로 정체
+                return 3;
             }
             if (speedKmh < 70) {
-                return 2; // 고속도로/도시고속도로 서행
+                return 2;
             }
-            return 1;     // 고속도로/도시고속도로 원활
+            return 1;
         }
         if (speedKmh < 16) {
-            return 3;     // 일반 시내도로 정체
+            return 3;
         }
         if (speedKmh < 30) {
-            return 2;     // 일반 시내도로 서행
+            return 2;
         }
-        return 1;         // 일반 시내도로 원활
+        return 1;
     }
 
     private static String resolveSegmentLabel(String sectionName, String instructions) {
@@ -564,12 +1061,19 @@ public class NaverDirectionsService {
                 0,
                 List.of(),
                 List.of(),
+                List.of(),
                 List.of()
         );
     }
 
     private record CachedRoute(
             DirectionsResponseDto response,
+            Instant createdAt
+    ) {
+    }
+
+    private record CachedReverseGeocode(
+            ReverseGeocodeResponseDto response,
             Instant createdAt
     ) {
     }

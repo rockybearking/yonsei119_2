@@ -3438,3 +3438,653 @@ body.dark-mode .cluster-item small {
 body.dark-mode .notice-copy strong {
     color: #fb7185;
 }
+
+/* ==========================================================================
+   9. 네이버 지도 v3 & NCP Maps API 확장 기능 스타일
+      (실시간 교통소통 레이어, 모바일 좌측 상단 ☰ 메뉴, 역지오코딩 주소, 실도로 ETA 랭킹,
+       4대 다중 경로 옵션 비교 카드, 경유지 마커, 병원 주변 거리뷰/파노라마)
+   ========================================================================== */
+
+/* 9-1. 상단 컨트롤 바 — 실시간 교통소통 토글 & 모바일 좌측 상단 ☰ 메뉴 */
+.traffic-toggle-btn[aria-pressed="true"] {
+    background: #03c75a;
+    border-color: #029f48;
+    color: #ffffff;
+}
+
+.mobile-top-left-menu {
+    display: none;
+}
+
+.mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid #d6e2ef;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.96);
+    color: #17579e;
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.mobile-menu-btn:hover,
+.mobile-menu-btn[aria-expanded="true"] {
+    background: #edf5ff;
+    border-color: #397dd3;
+}
+
+.mobile-menu-drawer {
+    position: relative;
+    padding: 10px 12px;
+    border: 1px solid #dce5f0;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.97);
+    box-shadow: 0 14px 36px rgba(15, 23, 42, 0.22);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    max-width: calc(100vw - 28px);
+}
+
+/* 9-2. 하단 검색 패널 — 현재 출발 기준점 주소(Reverse Geocoding) & 최단시간(ETA) 병원 추천 바 */
+.origin-eta-bar {
+    margin-top: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.origin-info-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid #d6e2ef;
+    border-radius: 8px;
+    background: #f4f8fd;
+}
+
+.origin-address-text {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #475569;
+    font-size: 0.76rem;
+    font-weight: 700;
+}
+
+.eta-rank-btn {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid rgba(3, 199, 90, 0.45);
+    border-radius: 6px;
+    background: rgba(3, 199, 90, 0.1);
+    color: #028a3e;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 800;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.eta-rank-btn:hover {
+    background: rgba(3, 199, 90, 0.18);
+}
+
+.eta-rank-btn[aria-expanded="true"] {
+    background: #03c75a;
+    border-color: #029f48;
+    color: #ffffff;
+}
+
+.eta-rank-box {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid #d6e2ef;
+    border-radius: 8px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.eta-rank-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 2px 4px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.74rem;
+    font-weight: 800;
+    color: #64748b;
+}
+
+.eta-rank-close {
+    border: 0;
+    background: transparent;
+    color: #64748b;
+    font: inherit;
+    font-size: 0.73rem;
+    font-weight: 800;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.eta-rank-close:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+.eta-rank-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.eta-rank-item {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    border: 1px solid #dce5f0;
+    border-radius: 7px;
+    background: #f8fafc;
+    color: #1e293b;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.eta-rank-item:hover {
+    border-color: #03c75a;
+    background: rgba(3, 199, 90, 0.06);
+}
+
+.eta-rank-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 5px;
+    background: rgba(17, 102, 212, 0.12);
+    color: #1d4ed8;
+    font-size: 0.72rem;
+    font-weight: 900;
+}
+
+.eta-rank-item.rank-1 .eta-rank-badge {
+    background: #03c75a;
+    color: #ffffff;
+}
+
+.eta-rank-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.eta-rank-main strong {
+    font-size: 0.8rem;
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.eta-rank-main small {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.eta-rank-er {
+    flex: 0 0 auto;
+    padding: 3px 7px;
+    border-radius: 5px;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #1e293b;
+    white-space: nowrap;
+}
+
+/* 9-3. 검색 자동완성 내 주소/장소 지오코딩 이동 버튼 */
+.search-geocode-li {
+    border-top: 1px dashed #cbd5e1;
+}
+
+.search-geocode-btn {
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 12px;
+    border: 0;
+    background: rgba(17, 102, 212, 0.06);
+    color: #1d4ed8;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.search-geocode-btn:hover,
+.search-geocode-btn:focus-visible {
+    background: rgba(17, 102, 212, 0.13);
+}
+
+.search-geocode-btn strong {
+    font-size: 0.8rem;
+    font-weight: 800;
+}
+
+.search-geocode-btn small {
+    color: #64748b;
+    font-size: 0.73rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+/* 9-4. 4대 경로 옵션(실시간 빠른길 / 실시간 최적 / 실시간 편한길 / 무료 우선) 동시 비교 카드 */
+.directions-alternatives {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.directions-alt-btn {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 9px 10px;
+    border: 1px solid #94a3b8;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #0f172a;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+    transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.directions-alt-btn:hover {
+    border-color: #03c75a;
+    background: #f0fdf4;
+}
+
+.directions-alt-btn.is-active {
+    border: 1.5px solid #03c75a;
+    background: #ecfdf5;
+    box-shadow: 0 2px 8px rgba(3, 199, 90, 0.14);
+}
+
+.directions-alt-title {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #475569;
+}
+
+.directions-alt-btn.is-active .directions-alt-title {
+    color: #028a3e;
+}
+
+.directions-alt-eta {
+    font-size: 0.86rem;
+    font-weight: 900;
+    color: #0f172a;
+    line-height: 1.25;
+}
+
+.directions-alt-meta {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #64748b;
+    line-height: 1.3;
+}
+
+@media (max-width: 720px) {
+    .directions-alternatives {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+/* 9-5. 경유지(Waypoint) 지도 오버레이 배지 */
+.waypoint-marker {
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: #0f172a;
+    border: 1.5px solid #38bdf8;
+    color: #f8fafc;
+    font-size: 0.72rem;
+    font-weight: 800;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.35);
+    pointer-events: none;
+}
+
+/* 9-6. 병원 주변 거리뷰 / 파노라마 (naver.maps.Panorama) */
+.panorama-section {
+    padding: 12px;
+    border: 1px solid #dce5f0;
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.panorama-heading {
+    margin-bottom: 0;
+}
+
+.panorama-wrap {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.panorama-view {
+    width: 100%;
+    height: 260px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #cbd5e1;
+    background: #0f172a;
+}
+
+.panorama-status {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+/* 9-7. 다크 모드 대응 */
+body.dark-mode .traffic-toggle-btn[aria-pressed="true"] {
+    background: #03c75a;
+    border-color: #4ade80;
+    color: #052e16;
+}
+
+body.dark-mode .mobile-menu-btn {
+    background: rgba(15, 23, 42, 0.94);
+    border-color: #334155;
+    color: #60a5fa;
+    box-shadow: 0 10px 26px rgba(2, 6, 23, 0.65);
+}
+
+body.dark-mode .mobile-menu-btn:hover,
+body.dark-mode .mobile-menu-btn[aria-expanded="true"] {
+    background: #1e293b;
+    border-color: #60a5fa;
+    color: #93c5fd;
+}
+
+body.dark-mode .mobile-menu-drawer {
+    background: rgba(15, 23, 42, 0.95);
+    border-color: #334155;
+    box-shadow: 0 16px 40px rgba(2, 6, 23, 0.75);
+}
+
+body.dark-mode .origin-info-row {
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid #334155;
+}
+
+body.dark-mode .origin-address-text {
+    color: #cbd5e1;
+}
+
+body.dark-mode .eta-rank-btn {
+    background: rgba(3, 199, 90, 0.16);
+    border-color: rgba(74, 222, 128, 0.45);
+    color: #4ade80;
+}
+
+body.dark-mode .eta-rank-btn[aria-expanded="true"] {
+    background: #03c75a;
+    border-color: #4ade80;
+    color: #052e16;
+}
+
+body.dark-mode .eta-rank-box {
+    background: #0f172a;
+    border: 1px solid #334155;
+}
+
+body.dark-mode .eta-rank-header {
+    border-bottom-color: #1e293b;
+    color: #94a3b8;
+}
+
+body.dark-mode .eta-rank-close {
+    color: #94a3b8;
+}
+
+body.dark-mode .eta-rank-close:hover {
+    background: #1e293b;
+    color: #f8fafc;
+}
+
+body.dark-mode .eta-rank-item {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #f1f5f9;
+}
+
+body.dark-mode .eta-rank-item:hover {
+    border-color: #4ade80;
+    background: rgba(3, 199, 90, 0.12);
+}
+
+body.dark-mode .eta-rank-badge {
+    background: rgba(59, 130, 246, 0.22);
+    color: #93c5fd;
+}
+
+body.dark-mode .eta-rank-item.rank-1 .eta-rank-badge {
+    background: #03c75a;
+    color: #052e16;
+}
+
+body.dark-mode .eta-rank-main small {
+    color: #94a3b8;
+}
+
+body.dark-mode .eta-rank-er {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+}
+
+body.dark-mode .search-geocode-li {
+    border-top-color: #334155;
+}
+
+body.dark-mode .search-geocode-btn {
+    background: rgba(37, 99, 235, 0.15);
+    color: #93c5fd;
+}
+
+body.dark-mode .search-geocode-btn:hover,
+body.dark-mode .search-geocode-btn:focus-visible {
+    background: rgba(37, 99, 235, 0.26);
+}
+
+body.dark-mode .directions-alt-btn {
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #f1f5f9;
+    box-shadow: 0 2px 6px rgba(2, 6, 23, 0.35);
+}
+
+body.dark-mode .directions-alt-btn:hover {
+    border-color: #4ade80;
+    background: rgba(15, 23, 42, 0.9);
+}
+
+body.dark-mode .directions-alt-btn.is-active {
+    background: rgba(6, 95, 70, 0.42);
+    border: 1.5px solid #4ade80;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);
+}
+
+body.dark-mode .directions-alt-title {
+    color: #94a3b8;
+}
+
+body.dark-mode .directions-alt-btn.is-active .directions-alt-title {
+    color: #4ade80;
+}
+
+body.dark-mode .directions-alt-eta {
+    color: #f8fafc;
+}
+
+body.dark-mode .directions-alt-meta {
+    color: #cbd5e1;
+}
+
+body.dark-mode .panorama-section {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+}
+
+body.dark-mode .panorama-view {
+    border: 1px solid #334155;
+}
+
+/* 9-8. 모바일(640px 이하) 좌측 상단 ☰ 메뉴 독립 및 하단 검색 상자 깨짐 방지 */
+@media (max-width: 640px) {
+    .mobile-top-left-menu {
+        position: fixed;
+        top: calc(var(--edge) + env(safe-area-inset-top));
+        left: calc(var(--edge) + env(safe-area-inset-left));
+        z-index: 16;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .mobile-menu-drawer .map-actions {
+        position: static;
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .mobile-menu-drawer .map-action {
+        --action-size: 40px;
+        width: 40px;
+        height: 40px;
+        flex: 0 0 40px;
+    }
+
+    .mobile-menu-drawer .radius-tool {
+        position: static;
+        width: 40px;
+        height: 40px;
+    }
+
+    .mobile-menu-drawer .radius-popover {
+        position: absolute;
+        top: calc(100% + 8px);
+        bottom: auto;
+        left: 0;
+        right: auto;
+        width: min(260px, calc(100vw - 28px));
+        z-index: 25;
+    }
+
+    .mobile-menu-drawer .search-updated-pill {
+        display: inline-flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: flex-start;
+        min-height: 40px;
+        padding: 3px 10px;
+        margin: 0;
+        border: 1px solid #d6e2ef;
+        border-radius: 12px;
+        background: #f4f8fd;
+        color: #365879;
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+
+    body.dark-mode .mobile-menu-drawer .search-updated-pill {
+        background: #1e293b;
+        border-color: #334155;
+        color: #cbd5e1;
+    }
+
+    body.dark-mode .mobile-menu-drawer .search-updated-pill .updated-label {
+        color: #94a3b8;
+    }
+
+    body.dark-mode .mobile-menu-drawer .search-updated-pill time {
+        color: #60a5fa;
+    }
+
+    .search-panel {
+        left: calc(var(--edge) + env(safe-area-inset-left));
+        right: calc(var(--edge) + env(safe-area-inset-right));
+        width: auto;
+        max-width: none;
+    }
+
+    .search-panel.is-collapsed {
+        left: auto;
+        width: fit-content;
+    }
+
+    .origin-info-row {
+        padding: 4px 8px;
+    }
+
+    .origin-address-text {
+        font-size: 0.72rem;
+    }
+
+    .eta-rank-btn {
+        padding: 3px 8px;
+        font-size: 0.71rem;
+    }
+
+    .panorama-view {
+        height: 210px;
+    }
+}

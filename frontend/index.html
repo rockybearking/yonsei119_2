@@ -46,7 +46,7 @@
       app.js에만 defer를 부여하여 GL 서브모듈 로드 완료 후 앱이 초기화되도록 보장합니다.
     -->
     <!--suppress JSUnresolvedLibraryURL -->
-    <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=xfbxloc8km&submodules=gl"></script>
+    <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=xfbxloc8km&submodules=gl,panorama"></script>
     <script src="app.js" defer></script>
 </head>
 <body class="dark-mode" data-theme="dark">
@@ -74,6 +74,27 @@
 </aside>
 
 <!-- ==========================================================================
+     [2-2. 모바일 전용 좌측 상단 ☰(세줄 메뉴) 및 독립 도구 서랍 (#mobile-top-left-menu)]
+     - 화면이 작은 휴대폰(640px 이하)에서 하단 검색 상자 UI가 깨지거나 이탈하지 않도록,
+       모바일 환경에서는 지도 조작 버튼(반경·내 위치·새로고침·교통·테마·갱신시간)을
+       좌측 상단 ☰ 메뉴 안으로 자동 분리·배치합니다.
+     ========================================================================== -->
+<aside id="mobile-top-left-menu" class="mobile-top-left-menu" aria-label="모바일 지도 도구 메뉴">
+    <button
+            id="mobile-menu-btn"
+            class="mobile-menu-btn"
+            type="button"
+            aria-expanded="false"
+            aria-controls="mobile-menu-drawer"
+            aria-label="지도 도구 메뉴 열기"
+            title="지도 도구 메뉴"
+    >
+        <span aria-hidden="true">☰</span>
+    </button>
+    <div id="mobile-menu-drawer" class="mobile-menu-drawer" hidden></div>
+</aside>
+
+<!-- ==========================================================================
      [3. 우측 하단 검색 및 필터 패널 (#search-panel)]
      - 탐색 반경 변경 팝오버(5km ~ 전국)
      - 내 위치 이동 버튼(#location-button) 및 전체 데이터 새로고침 버튼(#refresh-button)
@@ -87,11 +108,11 @@
         class="search-panel"
         aria-label="병원 검색과 필터"
 >
-    <div class="panel-heading">
+    <div id="search-panel-heading" class="panel-heading">
         <span class="search-heading">검색</span>
 
-        <!-- 지도 조작 액션 툴바 (반경 설정, 내 위치 이동, 새로고침, 테마 전환, 갱신 시간) -->
-        <nav class="map-actions" aria-label="지도 조작 및 갱신 정보">
+        <!-- 지도 조작 액션 툴바 (반경 설정, 내 위치 이동, 새로고침, 교통, 테마 전환, 갱신 시간) -->
+        <nav id="map-actions" class="map-actions" aria-label="지도 조작 및 갱신 정보">
             <!-- 반경 설정 팝오버 도구 -->
             <div class="radius-tool">
                 <button
@@ -181,6 +202,18 @@
                     <path d="M19 10a7.2 7.2 0 1 0 .1 4"></path>
                     <path d="M19 4v6h-6"></path>
                 </svg>
+            </button>
+
+            <!-- 실시간 도로 교통상황(TrafficLayer) ON/OFF 토글 버튼 -->
+            <button
+                    id="traffic-toggle"
+                    class="map-action traffic-toggle-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="실시간 교통정보 켜기"
+                    title="실시간 교통정보 레이어"
+            >
+                <span>교통</span>
             </button>
 
             <!-- 다크모드 / 라이트모드 전환 동그라미 아이콘 버튼 (#theme-toggle) -->
@@ -297,6 +330,17 @@
 
         <!-- 지도 화면 내 표시 중인 병원 수 카운터 -->
         <p id="map-count" class="map-count" role="status"></p>
+
+        <!-- 현재 출발지 주소(Reverse Geocoding) 표시 및 주변 병원 실도로 최단시간(ETA) 비교 영역 -->
+        <div id="origin-eta-bar" class="origin-eta-bar">
+            <div class="origin-info-row">
+                <span id="origin-address-text" class="origin-address-text">출발 기준: 위치 확인 중…</span>
+                <button id="eta-rank-btn" class="eta-rank-btn" type="button">
+                    실도로 최단시간 순위
+                </button>
+            </div>
+            <div id="eta-rank-box" class="eta-rank-box" hidden></div>
+        </div>
     </div>
 </section>
 
@@ -385,12 +429,9 @@
                         <option value="directions15">Directions 15 (다중경유·광역)</option>
                     </select>
 
-                    <label class="sr-only" for="directions-option">경로 탐색 옵션 선택</label>
-                    <select id="directions-option" class="directions-select" title="자동차 경로 탐색 옵션">
-                        <option value="trafast" selected>실시간 빠른길</option>
-                        <option value="traoptimal">실시간 최적</option>
-                        <option value="tracomfort">실시간 편한길</option>
-                        <option value="traavoidtoll">무료 우선</option>
+                    <label class="sr-only" for="directions-waypoint">경유 병원 선택</label>
+                    <select id="directions-waypoint" class="directions-select" title="경유지(1차 병원) 선택">
+                        <option value="" selected>경유지 없음 (직통)</option>
                     </select>
                 </div>
 
@@ -406,6 +447,20 @@
 
             <div id="directions-result" class="directions-result" aria-live="polite">
                 <p class="empty-state">자동차 예상 소요 시간과 최적 경로를 계산하고 있습니다…</p>
+            </div>
+        </section>
+
+        <!-- [세부 섹션 0-2] 네이버 거리뷰 / 파노라마 (submodules=panorama) -->
+        <section class="detail-section panorama-section" id="section-panorama">
+            <div class="section-heading panorama-heading">
+                <h2>병원 주변 거리뷰 (진입로 확인)</h2>
+                <button id="panorama-toggle-btn" class="directions-action-btn" type="button" aria-expanded="false">
+                    거리뷰 열기
+                </button>
+            </div>
+            <div id="panorama-wrap" class="panorama-wrap" hidden>
+                <div id="panorama-view" class="panorama-view" aria-label="병원 주변 360도 거리뷰"></div>
+                <p id="panorama-status" class="muted panorama-status">마우스 드래그로 병원 주변 도로와 진입로를 360도로 확인할 수 있습니다.</p>
             </div>
         </section>
 

@@ -228,12 +228,24 @@ const state = {
     map: null,
     circle: null,
     locationMarker: null,
+    waypointMarker: null,
     routePolyline: null,
     routeOutlinePolyline: null,
     routeSectionPolylines: [],
     activeRouteData: null,
     locating: false,
     origin: { lat: DEFAULT_ORIGIN.lat, lng: DEFAULT_ORIGIN.lng },
+    originLabel: DEFAULT_ORIGIN.label,
+    originAddress: '',
+    selectedDirectionOption: 'trafast',
+    mobileMenuOpen: false,
+    trafficEnabled: false,
+    trafficLayer: null,
+    panorama: null,
+    panoramaOpen: false,
+    etaRankOpen: false,
+    etaRankController: null,
+    reverseGeocodeController: null,
     locationKnown: false,
     locationAccuracy: null,
     locationUpdated: null,
@@ -518,6 +530,11 @@ function updateSummary() {
     }
 }
 
+function getOriginDisplayLabel() {
+    const base = state.locationKnown ? (state.originLabel || '내 위치') : DEFAULT_ORIGIN.label;
+    return state.originAddress ? `${base} (${state.originAddress})` : base;
+}
+
 /**
  * [함수 역할]
  * 탐색 반경 버튼(`#radius-button`)과 팝오버 안내 문구를 현재 선택된 반경 값으로 갱신합니다.
@@ -530,9 +547,16 @@ function updateRadiusUI() {
     byId('radius-button').setAttribute('aria-label', `탐색 반경 설정, 현재 ${label}`);
     byId('radius-button').title = `탐색 반경: ${label}`;
 
+    const originDesc = getOriginDisplayLabel();
     byId('radius-help').textContent = value === 'all'
         ? '전국 기관을 표시합니다. 선택하면 바로 적용됩니다.'
-        : `${state.locationKnown ? '내 위치' : DEFAULT_ORIGIN.label} 기준 · 선택하면 바로 적용됩니다.`;
+        : `${originDesc} 기준 · 선택하면 바로 적용됩니다.`;
+
+    const addrText = byId('origin-address-text');
+    if (addrText) {
+        addrText.textContent = `출발 기준: ${originDesc}`;
+        addrText.title = `출발 기준: ${originDesc} (${state.origin.lat.toFixed(5)}, ${state.origin.lng.toFixed(5)})`;
+    }
 }
 
 function closeRadius(restoreFocus = false) {
@@ -995,6 +1019,8 @@ function locate() {
                 lat: position.coords.latitude,
                 lng: position.coords.longitude
             };
+            state.originLabel = '내 위치';
+            state.originAddress = '';
 
             state.locationKnown = true;
             state.locationAccuracy = position.coords.accuracy;
@@ -1002,6 +1028,7 @@ function locate() {
 
             updateRadiusUI();
             updateLocationMarker();
+            updateOriginAddress();
 
             if (!state.selected) {
                 fitRadius();
@@ -1014,6 +1041,9 @@ function locate() {
             }
 
             updateMarkers();
+            if (state.etaRankOpen) {
+                loadEtaRanking();
+            }
             finish();
         },
         error => {
@@ -1022,6 +1052,7 @@ function locate() {
                 : '현재 위치를 확인하지 못했습니다.';
 
             updateRadiusUI();
+            updateOriginAddress();
             setStatus(
                 reason +
                 (state.locationKnown
@@ -1036,6 +1067,350 @@ function locate() {
             maximumAge: 0
         }
     );
+}
+
+/**
+ * [함수 역할]
+ * NCP Reverse Geocoding API(`GET /api/reverse-geocode`)를 호출하여
+ * 현재 출발 기준 좌표(`state.origin`)의 도로명/행정동 주소를 조회하고 UI에 반영합니다.
+ */
+async function updateOriginAddress() {
+    state.reverseGeocodeController?.abort();
+    state.reverseGeocodeController = new AbortController();
+
+    try {
+        const params = new URLSearchParams({
+            lat: String(state.origin.lat),
+            lng: String(state.origin.lng)
+        });
+        const response = await fetch(`/api/reverse-geocode?${params.toString()}`, {
+            signal: state.reverseGeocodeController.signal,
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            return;
+        }
+        const data = await response.json();
+        const addr = data.shortAddress || data.fullAddress || data.roadAddress || data.jibunAddress;
+        if (data.code === 0 && addr) {
+            state.originAddress = addr;
+            updateRadiusUI();
+        }
+    } catch (err) {
+        if (err?.name !== 'AbortError') {
+            // 역지오코딩 실패 시 기본 라벨 유지
+        }
+    }
+}
+
+/**
+ * [함수 역할]
+ * 지도 우클릭(모바일은 롱탭) 또는 주소 검색을 통해 임의의 위경도 좌표를 새로운 출발 기준점(`state.origin`)으로 설정합니다.
+ *
+ * @param {number} lat 위도
+ * @param {number} lng 경도
+ * @param {string} [customLabel='지정 출발지'] 출발 기준점 표시 이름
+ */
+function setCustomOrigin(lat, lng, customLabel = '지정 출발지') {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return;
+    }
+
+    state.origin = { lat, lng };
+    state.locationKnown = true;
+    state.originLabel = customLabel;
+    state.originAddress = '';
+    state.locationUpdated = new Date();
+
+    updateRadiusUI();
+    updateLocationMarker();
+    updateCircle(true);
+    updateMarkers();
+    updateOriginAddress();
+    setStatus(`출발 기준점을 선택한 위치(${lat.toFixed(4)}, ${lng.toFixed(4)})로 변경했습니다. (지도 우클릭으로 언제든 변경 가능)`);
+
+    if (state.etaRankOpen) {
+        loadEtaRanking();
+    }
+
+    if (state.selected) {
+        loadDirectionsForHospital(state.selected, Boolean(state.routePolyline));
+    }
+}
+
+/**
+ * [함수 역할]
+ * 네이버 지도 GL 커스텀 다크 스타일(`customStyleId: 4b12b380-f70c-4d42-85df-ecf7961ff041`)에서
+ * 기본 스타일 JSON에 누락된 네이버 실시간 교통 벡터 타일 소스(`ctt`)와 6개 소통 라인 레이어를
+ * 내부 Mapbox GL 인스턴스(`state.map.getMapbox()`)에 직접 주입하고 가시성(`visibility`)을 동기화합니다.
+ */
+function syncGlTrafficLayers(mapbox, visible) {
+    if (!mapbox || typeof mapbox.getStyle !== 'function') {
+        return;
+    }
+
+    const visibility = visible ? 'visible' : 'none';
+    const style = mapbox.getStyle();
+    if (!style || !Array.isArray(style.layers)) {
+        return;
+    }
+
+    // 1. 기본 라이트 GL 스타일에 내장된 CTT 레이어가 있는 경우 함께 토글
+    for (const layer of style.layers) {
+        const group = layer?.metadata?.group;
+        if (group === 'ctt' || group === 'dctt' || String(layer?.id || '').startsWith('CTT/')) {
+            try {
+                mapbox.setLayoutProperty(layer.id, 'visibility', visibility);
+            } catch {
+                // 레이어 상태 전환 중 예외 무시
+            }
+        }
+    }
+
+    // 2. 다크 모드 커스텀 스타일(customStyleId)처럼 'ctt' 소스가 없는 경우 직접 주입
+    if (!mapbox.getSource('ctt')) {
+        if (!visible) {
+            return;
+        }
+        try {
+            mapbox.addSource('ctt', {
+                type: 'vector',
+                url: 'https://map.pstatic.net/nvc/ctt/wmts/naver/getMetadata/v1'
+            });
+        } catch (err) {
+            console.warn('다크모드 교통 벡터 소스(ctt) 추가 중 예외:', err);
+            return;
+        }
+    }
+
+    const bgWidthStops = [
+        [6, 1.4], [7, 2.4], [8, 2.8], [9, 3.8], [10, 3.8],
+        [11, 3.8], [12, 3.8], [13, 3.8], [14, 3.8], [15, 4], [16, 4], [17, 5]
+    ];
+    const fgWidthStops = [
+        [6, 1.1], [7, 1.6], [8, 2.0], [9, 2.2], [10, 2.2],
+        [11, 2.2], [12, 2.2], [13, 2.2], [14, 2.2], [15, 2.5], [16, 2.8], [17, 3.5]
+    ];
+    const lineOffsetStops = [
+        [6, 1], [7, 1.5], [8, 2], [9, 2], [10, 3], [11, 3],
+        [12, 3], [13, 3], [14, 3], [15, 4], [16, 5], [17, 8], [18, 8], [19, 32]
+    ];
+
+    const firstSymbolLayer = style.layers.find(l => l.type === 'symbol')?.id;
+
+    const specs = [
+        { id: 'yonsei-ctt-2-bg', stateVal: 1, color: 'rgb(0, 0, 0)', widthStops: bgWidthStops },
+        { id: 'yonsei-ctt-3-bg', stateVal: 2, color: 'rgb(0, 0, 0)', widthStops: bgWidthStops },
+        { id: 'yonsei-ctt-4-bg', stateVal: 4, color: 'rgb(0, 0, 0)', widthStops: bgWidthStops },
+        { id: 'yonsei-ctt-2', stateVal: 1, color: '#27c441', widthStops: fgWidthStops },
+        { id: 'yonsei-ctt-3', stateVal: 2, color: '#ff8d00', widthStops: fgWidthStops },
+        { id: 'yonsei-ctt-4', stateVal: 4, color: '#ff3b30', widthStops: fgWidthStops }
+    ];
+
+    for (const spec of specs) {
+        if (!mapbox.getLayer(spec.id)) {
+            try {
+                mapbox.addLayer({
+                    id: spec.id,
+                    type: 'line',
+                    source: 'ctt',
+                    'source-layer': 'ctt',
+                    minzoom: 4,
+                    maxzoom: 22,
+                    filter: ['==', 'state', spec.stateVal],
+                    layout: {
+                        visibility,
+                        'line-cap': 'round',
+                        'line-join': 'miter'
+                    },
+                    paint: {
+                        'line-color': spec.color,
+                        'line-width': { stops: spec.widthStops },
+                        'line-offset': { stops: lineOffsetStops }
+                    }
+                }, firstSymbolLayer);
+            } catch (err) {
+                console.warn(`다크모드 교통 레이어(${spec.id}) 추가 실패:`, err);
+            }
+        } else {
+            try {
+                mapbox.setLayoutProperty(spec.id, 'visibility', visibility);
+            } catch {
+                // 무시
+            }
+        }
+    }
+}
+
+/**
+ * [함수 역할]
+ * 네이버 지도 실시간 교통소통 레이어(`naver.maps.TrafficLayer` 및 GL 다크모드 `ctt` 벡터 레이어)를
+ * 현재 상태(`state.trafficEnabled`)에 맞춰 동기화합니다.
+ */
+function syncTrafficLayer() {
+    if (!state.map || typeof naver === 'undefined' || !naver.maps?.TrafficLayer) {
+        return;
+    }
+
+    if (state.map.get?.('renderMode') === 2 && !isMapReadyForOverlays()) {
+        naver.maps.Event.once(state.map, 'glReady', () => {
+            syncTrafficLayer();
+        });
+        return;
+    }
+
+    if (state.trafficEnabled) {
+        try {
+            if (!state.trafficLayer) {
+                state.trafficLayer = new naver.maps.TrafficLayer({ interval: 300000 });
+            }
+            state.trafficLayer.setMap(state.map);
+        } catch (err) {
+            console.warn('실시간 교통소통 레이어 활성화 중 예외:', err);
+        }
+    } else if (state.trafficLayer) {
+        try {
+            state.trafficLayer.setMap(null);
+        } catch {
+            // 레이어 해제 중 예외 무시
+        }
+    }
+
+    try {
+        const mapbox = state.map.getMapbox?.();
+        if (mapbox) {
+            syncGlTrafficLayers(mapbox, state.trafficEnabled);
+        }
+    } catch (err) {
+        console.warn('GL 실시간 교통 레이어 동기화 중 예외:', err);
+    }
+}
+
+/**
+ * [함수 역할]
+ * 상단 `교통소통` 버튼(`#traffic-toggle`) 클릭 시 실시간 도로 소통 레이어를 ON/OFF 토글합니다.
+ */
+function toggleTrafficLayer() {
+    state.trafficEnabled = !state.trafficEnabled;
+    const btn = byId('traffic-toggle');
+    if (btn) {
+        btn.setAttribute('aria-pressed', String(state.trafficEnabled));
+    }
+    syncTrafficLayer();
+}
+
+/**
+ * [함수 역할]
+ * 현재 출발 기준점(`state.origin`)에서 주변 후보 응급의료기관까지의 실도로 주행 소요시간(ETA)을
+ * 백엔드(`GET /api/directions/rank`)를 통해 일괄 비교하고 최단시간 순으로 추천 목록을 렌더링합니다.
+ */
+async function loadEtaRanking() {
+    const box = byId('eta-rank-box');
+    const btn = byId('eta-rank-btn');
+    if (!box) {
+        return;
+    }
+
+    state.etaRankOpen = true;
+    box.hidden = false;
+    if (btn) {
+        btn.setAttribute('aria-expanded', 'true');
+    }
+
+    state.etaRankController?.abort();
+    state.etaRankController = new AbortController();
+
+    box.replaceChildren(
+        node('p', 'empty-state', '주변 응급의료기관의 실시간 도로 소요시간(ETA)을 비교하고 있습니다…')
+    );
+
+    const radiusVal = byId('radius')?.value || '10';
+    const radiusKm = radiusVal === 'all' ? '30' : radiusVal;
+    const includeOther = Boolean(byId('filter-other')?.checked);
+
+    try {
+        const params = new URLSearchParams({
+            startLat: String(state.origin.lat),
+            startLng: String(state.origin.lng),
+            radiusKm: String(radiusKm),
+            includeOther: String(includeOther),
+            limit: '5',
+            option: 'trafast'
+        });
+
+        const response = await fetch(`/api/directions/rank?${params.toString()}`, {
+            signal: state.etaRankController.signal,
+            headers: { Accept: 'application/json' }
+        });
+
+        if (!response.ok) {
+            box.replaceChildren(
+                node('p', 'empty-state', `최단시간 병원 조회 실패 (HTTP ${response.status})`)
+            );
+            return;
+        }
+
+        const ranks = await response.json();
+        box.replaceChildren();
+
+        const header = node('div', 'eta-rank-header');
+        header.append(
+            node('span', '', `실도로 최단시간 병원 추천 (반경 ${radiusKm}km 내 상위 ${ranks.length}곳)`)
+        );
+        const closeBtn = node('button', 'eta-rank-close', '닫기');
+        closeBtn.type = 'button';
+        closeBtn.addEventListener('click', () => {
+            state.etaRankOpen = false;
+            box.hidden = true;
+            btn?.setAttribute('aria-expanded', 'false');
+        });
+        header.append(closeBtn);
+        box.append(header);
+
+        if (!Array.isArray(ranks) || !ranks.length) {
+            box.append(node('p', 'empty-state', '해당 반경 내 비교 가능한 응급의료기관이 없습니다. 반경을 넓혀보세요.'));
+            return;
+        }
+
+        const list = node('div', 'eta-rank-list');
+        for (const item of ranks) {
+            const row = node('button', `eta-rank-item ${item.rank === 1 ? 'rank-1' : ''}`);
+            row.type = 'button';
+
+            const badge = node('span', 'eta-rank-badge', `${item.rank}위`);
+            const main = node('div', 'eta-rank-main');
+            const drivingKm = item.drivingDistanceKm ?? item.roadDistanceKm ?? '-';
+            main.append(
+                node('strong', '', `${item.name} · ${item.durationText}`),
+                node(
+                    'small',
+                    '',
+                    `${item.typeLabel} · 실도로 ${drivingKm}km (직선 ${item.straightDistanceKm}km)`
+                )
+            );
+            const erBadge = node('span', 'eta-rank-er', `응급실 ${bedValue(item.erBeds)}`);
+
+            row.append(badge, main, erBadge);
+            row.addEventListener('click', () => {
+                const target = state.hospitals.find(h => h.id === item.id);
+                if (target) {
+                    openHospital(target);
+                    focusHospitalOnMap(target, 14);
+                    loadDirectionsForHospital(target, true);
+                }
+            });
+
+            list.append(row);
+        }
+        box.append(list);
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            return;
+        }
+        box.replaceChildren(
+            node('p', 'empty-state', `최단시간 병원 조회 중 오류가 발생했습니다: ${err.message}`)
+        );
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -1412,13 +1787,71 @@ function focusHospitalOnMap(hospital, targetZoom = 15) {
     }
 }
 
+/**
+ * [함수 역할]
+ * 검색창에 입력된 주소나 지역명을 백엔드 Geocoding API(`GET /api/geocode`)로 변환하여
+ * 해당 좌표를 새로운 출발 기준점(`state.origin`)으로 설정하고 지도를 이동합니다.
+ *
+ * @param {string} rawQuery 검색할 주소 또는 지역명
+ */
+async function geocodeAndMoveOrigin(rawQuery) {
+    const trimmed = String(rawQuery || '').trim();
+    if (!trimmed) {
+        return;
+    }
+
+    setStatus(`'${trimmed}' 위치 좌표를 조회하고 있습니다…`);
+    try {
+        const params = new URLSearchParams({ query: trimmed });
+        const response = await fetch(`/api/geocode?${params.toString()}`, {
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            setStatus(`위치 조회 실패 (HTTP ${response.status})`);
+            return;
+        }
+        const data = await response.json();
+        const firstItem = Array.isArray(data.items) && data.items.length > 0 ? data.items[0] : data;
+        const targetLat = Number(firstItem?.lat);
+        const targetLng = Number(firstItem?.lng);
+        if (data.code !== 0 || !Number.isFinite(targetLat) || !Number.isFinite(targetLng)) {
+            setStatus(`'${trimmed}'에 해당하는 주소나 지역 좌표를 찾지 못했습니다.`);
+            return;
+        }
+
+        const label = firstItem.title || firstItem.roadAddress || firstItem.jibunAddress || trimmed;
+        byId('search-results').hidden = true;
+        blurKeyword();
+
+        setCustomOrigin(targetLat, targetLng, label);
+
+        if (state.map) {
+            state.hasFitted = true;
+            if (byId('radius').value === 'all') {
+                const targetLatLng = new naver.maps.LatLng(targetLat, targetLng);
+                if (typeof state.map.morph === 'function') {
+                    state.map.morph(targetLatLng, 13, { duration: 450, easing: 'easeOutCubic' });
+                } else {
+                    state.map.setCenter(targetLatLng);
+                    state.map.setZoom(13);
+                }
+            } else {
+                fitRadius();
+            }
+        }
+        setStatus(`출발 기준점을 '${label}' 위치로 변경했습니다.`);
+    } catch (err) {
+        setStatus(`위치 조회 중 오류 발생: ${err.message}`);
+    }
+}
+
 function updateSearch() {
     closeRadius();
 
     const list = byId('search-results');
     const keywordInput = byId('keyword');
-    const query = keywordInput
-        .value
+    const rawValue = keywordInput.value.trim();
+    const query = rawValue
         .replace(/\s+/g, '')
         .toLowerCase();
 
@@ -1439,14 +1872,13 @@ function updateSearch() {
             item.name
                 .replace(/\s+/g, '')
                 .toLowerCase()
+                .includes(query) ||
+            String(item.address || '')
+                .replace(/\s+/g, '')
+                .toLowerCase()
                 .includes(query)
         )
         .slice(0, 25);
-
-    if (!matches.length) {
-        list.append(node('li', 'empty-state', '일치하는 기관이 없습니다.'));
-        return;
-    }
 
     const fragment = document.createDocumentFragment();
 
@@ -1474,6 +1906,20 @@ function updateSearch() {
         fragment.append(li);
     }
 
+    // 주소/지역명 지오코딩을 통한 출발 기준점 이동 항목 추가
+    const geoLi = node('li', 'search-geocode-li');
+    const geoBtn = node('button', 'search-geocode-btn');
+    geoBtn.type = 'button';
+    geoBtn.append(
+        node('strong', '', `'${rawValue}' 주소·지역으로 출발 기준점 이동`),
+        node('small', '', '주변 병원 탐색')
+    );
+    geoBtn.addEventListener('click', () => {
+        geocodeAndMoveOrigin(rawValue);
+    });
+    geoLi.append(geoBtn);
+    fragment.append(geoLi);
+
     list.append(fragment);
 }
 
@@ -1491,6 +1937,13 @@ function clearRouteOnMap() {
     state.routePolyline = null;
     state.routeOutlinePolyline?.setMap(null);
     state.routeOutlinePolyline = null;
+
+    try {
+        state.waypointMarker?.setMap(null);
+    } catch {
+        // 경유지 마커 해제 중 예외 무시
+    }
+    state.waypointMarker = null;
 
     if (Array.isArray(state.routeSectionPolylines)) {
         for (const poly of state.routeSectionPolylines) {
@@ -1589,7 +2042,8 @@ function drawRouteOnMap(hospital, data) {
     }));
 
     // 2. 전체 경로 기본 베이스 라인 (section 미포함 일반 도로 구간까지 끊김 없이 원활 그린으로 연결)
-    state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline({
+    //    네이버 지도 PointingIcon(출발점 원형, 도착점 진행방향 화살표) 옵션 함께 적용
+    const polylineOpts = {
         map: state.map,
         path: latLngPath,
         strokeColor: '#03c75a',
@@ -1598,7 +2052,34 @@ function drawRouteOnMap(hospital, data) {
         strokeLineCap: 'round',
         strokeLineJoin: 'round',
         zIndex: 95
-    }));
+    };
+    if (naver.maps?.PointingIcon) {
+        polylineOpts.startIcon = naver.maps.PointingIcon.CIRCLE;
+        polylineOpts.startIconSize = 10;
+        polylineOpts.endIcon = naver.maps.PointingIcon.BLOCK_ARROW;
+        polylineOpts.endIconSize = 14;
+    }
+    state.routePolyline = guardGlShapeRedraw(new naver.maps.Polyline(polylineOpts));
+
+    // 경유지(Waypoint)가 선택되어 있는 경우 지도 위에 경유지 배지 표시
+    const rawWaypoint = byId('directions-waypoint')?.value || '';
+    if (rawWaypoint.includes('|')) {
+        const [coordPart, wpName] = rawWaypoint.split('|');
+        const [wpLngStr, wpLatStr] = coordPart.split(',');
+        const wpLat = Number(wpLatStr);
+        const wpLng = Number(wpLngStr);
+        if (Number.isFinite(wpLat) && Number.isFinite(wpLng)) {
+            const wpEl = node('div', 'waypoint-marker', `경유 · ${wpName}`);
+            state.waypointMarker = createNaverDomOverlay({
+                map: state.map,
+                position: new naver.maps.LatLng(wpLat, wpLng),
+                content: wpEl,
+                xAnchor: 0.5,
+                yAnchor: 1.2,
+                zIndex: 120
+            });
+        }
+    }
 
     // 3. 구간별 실시간 혼잡도(data.sections: 서행 2 -> 정체 3 순서로 레이어링하여 정체 빨간색이 최상단에 표시되도록 함)
     if (Array.isArray(data.sections) && data.sections.length > 0) {
@@ -1671,6 +2152,53 @@ function drawRouteOnMap(hospital, data) {
 
 /**
  * [함수 역할]
+ * 현재 선택된 목적지 병원(`destinationHospital`)을 제외한 주변 응급의료기관들을
+ * 출발 기준점(`state.origin`)과의 직선거리 순으로 정렬하여
+ * 경유지 선택 드롭다운(`#directions-waypoint`) 옵션을 구성합니다.
+ *
+ * @param {Object} destinationHospital 최종 목적지 병원 객체
+ */
+function populateWaypointSelect(destinationHospital) {
+    const select = byId('directions-waypoint');
+    if (!select || !destinationHospital) {
+        return;
+    }
+
+    const prevValue = select.value;
+    select.replaceChildren(
+        node('option', '', '경유지 없음 (직행)')
+    );
+    select.firstElementChild.value = '';
+
+    const nearby = state.hospitals
+        .filter(h =>
+            h.id !== destinationHospital.id &&
+            Number.isFinite(h.lat) &&
+            Number.isFinite(h.lng)
+        )
+        .map(h => ({
+            hospital: h,
+            dist: distanceKm(state.origin, h)
+        }))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, 15);
+
+    for (const { hospital, dist } of nearby) {
+        const opt = document.createElement('option');
+        opt.value = `${hospital.lng},${hospital.lat}|${hospital.name}`;
+        opt.textContent = `경유: ${hospital.name} (${dist.toFixed(1)}km · 응급실 ${bedValue(hospital.beds?.hvec)})`;
+        select.append(opt);
+    }
+
+    if (prevValue && [...select.options].some(o => o.value === prevValue)) {
+        select.value = prevValue;
+    } else {
+        select.value = '';
+    }
+}
+
+/**
+ * [함수 역할]
  * 백엔드 `/api/directions` 엔드포인트를 호출하여 현재 기준 위치(`state.origin`)에서
  * 선택된 병원(`hospital`)까지의 네이버 **Directions 5** 또는 **Directions 15**
  * 자동차 주행 경로 및 예상 소요 시간(ETA)을 조회하고 바텀시트에 렌더링합니다.
@@ -1686,7 +2214,11 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
     }
 
     const apiType = byId('directions-api')?.value || 'directions5';
-    const option = byId('directions-option')?.value || 'trafast';
+    const option = state.selectedDirectionOption || 'trafast';
+    const rawWaypoint = byId('directions-waypoint')?.value || '';
+    const [waypointCoord, waypointName] = rawWaypoint.includes('|')
+        ? rawWaypoint.split('|')
+        : [rawWaypoint, ''];
 
     state.directionsController?.abort();
     state.directionsController = new AbortController();
@@ -1707,6 +2239,9 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
             apiType,
             option
         });
+        if (waypointCoord) {
+            params.set('waypoints', waypointCoord);
+        }
 
         const response = await fetch(`/api/directions?${params.toString()}`, {
             signal: state.directionsController.signal,
@@ -1736,15 +2271,52 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
             return;
         }
 
+        const wpBadgeSuffix = waypointName ? ` · 경유(${waypointName})` : '';
         if (statusBadge) {
-            statusBadge.textContent = `${data.apiLabel} · ${data.optionLabel}`;
+            statusBadge.textContent = `${data.apiLabel} · ${data.optionLabel}${wpBadgeSuffix}`;
         }
 
         // 바텀시트 상단 거리 요약 텍스트에 자동차 예상 소요 시간과 실도로 거리도 함께 병기
         const straightKm = distanceKm(state.origin, hospital).toFixed(1);
-        const originName = state.locationKnown ? '내 위치' : DEFAULT_ORIGIN.label;
+        const originName = getOriginDisplayLabel();
         byId('hospital-distance').textContent =
             `${originName}에서 직선 ${straightKm} km · 자동차 ${data.durationText} (실도로 ${data.distanceKm} km)`;
+
+        container.replaceChildren();
+
+        // 4대 경로 옵션(실시간 빠른길 / 실시간 최적 / 실시간 편한길 / 무료 우선) 동시 비교 카드 렌더링
+        if (Array.isArray(data.alternatives) && data.alternatives.length > 0) {
+            const altWrap = node('div', 'directions-alternatives');
+            for (const alt of data.alternatives) {
+                const isCurrent = alt.option === data.option;
+                const altBtn = node('button', `directions-alt-btn ${isCurrent ? 'is-active' : ''}`);
+                altBtn.type = 'button';
+                altBtn.dataset.option = alt.option;
+                altBtn.setAttribute('aria-pressed', String(isCurrent));
+                const exactAltKm = Number.isFinite(alt.distanceMeters) && alt.distanceMeters > 0
+                    ? (alt.distanceMeters / 1000).toFixed(2)
+                    : alt.distanceKm;
+                const tollInfo = alt.tollFare > 0
+                    ? `통행료 ${alt.tollFare.toLocaleString('ko-KR')}원`
+                    : '무료도로';
+                const taxiInfo = alt.taxiFare > 0
+                    ? ` · 택시 ${alt.taxiFare.toLocaleString('ko-KR')}원`
+                    : '';
+                altBtn.append(
+                    node('span', 'directions-alt-title', alt.optionLabel),
+                    node('strong', 'directions-alt-eta', alt.durationText),
+                    node('span', 'directions-alt-meta', `${exactAltKm} km · ${tollInfo}${taxiInfo}`)
+                );
+                altBtn.addEventListener('click', () => {
+                    if (state.selectedDirectionOption !== alt.option) {
+                        state.selectedDirectionOption = alt.option;
+                        loadDirectionsForHospital(hospital, Boolean(state.routePolyline));
+                    }
+                });
+                altWrap.append(altBtn);
+            }
+            container.append(altWrap);
+        }
 
         // KPI 3열 그리드 생성 (예상 소요 시간 / 실도로 주행 거리 / 예상 요금)
         const kpiGrid = node('div', 'directions-kpi-grid');
@@ -1753,14 +2325,20 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         etaCard.append(
             node('span', 'directions-kpi-label', '예상 소요 시간 (ETA)'),
             node('strong', 'directions-kpi-value highlight', data.durationText),
-            node('span', 'directions-kpi-sub', `${data.apiLabel} · ${data.optionLabel}`)
+            node('span', 'directions-kpi-sub', `${data.apiLabel} · ${data.optionLabel}${wpBadgeSuffix}`)
         );
 
+        const exactMainKm = Number.isFinite(data.distanceMeters) && data.distanceMeters > 0
+            ? (data.distanceMeters / 1000).toFixed(2)
+            : data.distanceKm;
+        const exactMetersText = Number.isFinite(data.distanceMeters) && data.distanceMeters > 0
+            ? `정밀 ${data.distanceMeters.toLocaleString('ko-KR')}m · `
+            : '';
         const distCard = node('div', 'directions-kpi-card');
         distCard.append(
             node('span', 'directions-kpi-label', '실도로 주행 거리'),
-            node('strong', 'directions-kpi-value', `${data.distanceKm} km`),
-            node('span', 'directions-kpi-sub', `직선거리 ${straightKm} km`)
+            node('strong', 'directions-kpi-value', `${exactMainKm} km`),
+            node('span', 'directions-kpi-sub', `${exactMetersText}직선거리 ${straightKm} km`)
         );
 
         const fareCard = node('div', 'directions-kpi-card');
@@ -1780,7 +2358,7 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
         );
 
         kpiGrid.append(etaCard, distCard, fareCard);
-        container.replaceChildren(kpiGrid);
+        container.append(kpiGrid);
 
         // 실시간 구간별 교통 소통 범례(원활·서행·정체) 및 주요 도로 혼잡도 배지 표시
         const trafficBox = node('div', 'directions-traffic-summary');
@@ -3075,8 +3653,113 @@ function renderContacts(hospital) {
 }
 
 /* --------------------------------------------------------------------------
-   [19. 병원 상세정보 바텀시트(Bottom Sheet) 인터랙션 및 접근성]
+   [19. 병원 상세정보 바텀시트(Bottom Sheet) 인터랙션, 파노라마(거리뷰) 및 접근성]
    -------------------------------------------------------------------------- */
+
+/**
+ * [함수 역할]
+ * 병원 상세창 전환 또는 닫기 시 거리뷰(`naver.maps.Panorama`) 컨테이너를 초기 접힘 상태로 리셋합니다.
+ */
+function resetPanorama() {
+    state.panoramaOpen = false;
+    const wrap = byId('panorama-wrap');
+    const btn = byId('panorama-toggle-btn');
+    const status = byId('panorama-status');
+
+    if (wrap) {
+        wrap.hidden = true;
+    }
+    if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        btn.textContent = '거리뷰 열기';
+    }
+    if (status) {
+        status.textContent = '';
+    }
+}
+
+/**
+ * [함수 역할]
+ * 현재 선택된 병원(`state.selected`) 주변의 네이버 거리뷰(`naver.maps.Panorama`)를 열거나 닫습니다.
+ */
+function toggleHospitalPanorama() {
+    const wrap = byId('panorama-wrap');
+    const btn = byId('panorama-toggle-btn');
+    const viewEl = byId('panorama-view');
+    const statusEl = byId('panorama-status');
+    const hospital = state.selected;
+
+    if (!wrap || !btn || !viewEl || !hospital) {
+        return;
+    }
+
+    if (state.panoramaOpen) {
+        resetPanorama();
+        return;
+    }
+
+    state.panoramaOpen = true;
+    wrap.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    btn.textContent = '거리뷰 닫기';
+
+    if (typeof naver === 'undefined' || !naver.maps?.Panorama) {
+        if (statusEl) {
+            statusEl.textContent = '네이버 지도 Panorama 서브모듈을 불러오지 못했습니다.';
+        }
+        return;
+    }
+
+    if (statusEl) {
+        statusEl.textContent = `${hospital.name} 주변 도로 거리뷰를 불러오는 중입니다…`;
+    }
+
+    const targetPos = new naver.maps.LatLng(hospital.lat, hospital.lng);
+
+    try {
+        if (!state.panorama) {
+            state.panorama = new naver.maps.Panorama(viewEl, {
+                position: targetPos,
+                pov: {
+                    pan: 0,
+                    tilt: 10,
+                    fov: 100
+                }
+            });
+
+            naver.maps.Event.addListener(state.panorama, 'pano_changed', () => {
+                const loc = state.panorama?.getLocation?.();
+                if (statusEl && loc) {
+                    const roadTitle = [loc.address, loc.title].filter(Boolean).join(' · ');
+                    const photoDate = loc.photodate ? ` (촬영: ${String(loc.photodate).slice(0, 10)})` : '';
+                    statusEl.textContent = roadTitle
+                        ? `거리뷰 위치: ${roadTitle}${photoDate}`
+                        : '거리뷰 로드 완료 (마우스 드래그로 360° 회전 가능)';
+                }
+            });
+
+            naver.maps.Event.addListener(state.panorama, 'pano_status', statusCode => {
+                if (statusCode !== 'OK' && statusEl) {
+                    statusEl.textContent = '해당 병원 반경 300m 이내에 제공되는 네이버 거리뷰가 없습니다.';
+                }
+            });
+        } else {
+            state.panorama.setPosition(targetPos);
+            setTimeout(() => {
+                try {
+                    const size = new naver.maps.Size(viewEl.clientWidth || 320, viewEl.clientHeight || 260);
+                    state.panorama.setSize?.(size);
+                } catch {
+                    // 리사이즈 예외 무시
+                }
+            }, 80);
+        }
+    } catch (err) {
+        if (statusEl) {
+            statusEl.textContent = `거리뷰 초기화 실패: ${err.message}`;
+        }
+    }
+}
 
 function openHospital(hospital, focus = true) {
     closeRadius();
@@ -3093,8 +3776,10 @@ function openHospital(hospital, focus = true) {
         state.previousFocus = document.activeElement;
     }
 
-    if (state.selected?.id !== hospital.id) {
+    const isDifferentHospital = state.selected?.id !== hospital.id;
+    if (isDifferentHospital) {
         byId('developer-mode').open = false;
+        resetPanorama();
     }
 
     state.selected = hospital;
@@ -3119,8 +3804,12 @@ function openHospital(hospital, focus = true) {
     byId('hospital-address').textContent = `주소 ${displayValue(hospital.address)}`;
 
     const distance = distanceKm(state.origin, hospital).toFixed(1);
-    const originName = state.locationKnown ? '내 위치' : DEFAULT_ORIGIN.label;
+    const originName = getOriginDisplayLabel();
     byId('hospital-distance').textContent = `${originName}에서 직선거리 ${distance} km`;
+
+    if (isDifferentHospital) {
+        populateWaypointSelect(hospital);
+    }
 
     renderContacts(hospital);
     renderMessages(hospital);
@@ -3173,6 +3862,7 @@ function closeSheet() {
     byId('sheet').setAttribute('aria-hidden', 'true');
     byId('sheet-dim').hidden = true;
 
+    resetPanorama();
     state.selected = null;
     byId('sheet').inert = true;
     setBackgroundInert(false);
@@ -3544,6 +4234,45 @@ function initSearchFocus() {
    [22. 애플리케이션 진입점 및 네이버 지도 초기화]
    -------------------------------------------------------------------------- */
 
+function toggleMobileMenu(forceValue) {
+    const drawer = byId('mobile-menu-drawer');
+    const btn = byId('mobile-menu-btn');
+    if (!drawer || !btn) {
+        return;
+    }
+    state.mobileMenuOpen = typeof forceValue === 'boolean' ? forceValue : !state.mobileMenuOpen;
+    drawer.hidden = !state.mobileMenuOpen;
+    btn.setAttribute('aria-expanded', String(state.mobileMenuOpen));
+    btn.setAttribute('aria-label', state.mobileMenuOpen ? '지도 도구 메뉴 닫기' : '지도 도구 메뉴 열기');
+    if (!state.mobileMenuOpen) {
+        closeRadius();
+    }
+}
+
+function syncMobileMenuPlacement() {
+    const mapActions = byId('map-actions');
+    const mobileDrawer = byId('mobile-menu-drawer');
+    const searchHeading = byId('search-panel-heading');
+    const searchToggle = byId('search-toggle');
+    if (!mapActions || !mobileDrawer || !searchHeading) {
+        return;
+    }
+
+    const isMobile = window.innerWidth <= 640;
+    if (isMobile) {
+        if (mapActions.parentElement !== mobileDrawer) {
+            mobileDrawer.appendChild(mapActions);
+        }
+    } else {
+        if (mapActions.parentElement !== searchHeading) {
+            searchHeading.insertBefore(mapActions, searchToggle || null);
+        }
+        if (state.mobileMenuOpen) {
+            toggleMobileMenu(false);
+        }
+    }
+}
+
 function initDirectionsControls() {
     byId('directions-api')?.addEventListener('change', () => {
         if (state.selected) {
@@ -3551,7 +4280,7 @@ function initDirectionsControls() {
         }
     });
 
-    byId('directions-option')?.addEventListener('change', () => {
+    byId('directions-waypoint')?.addEventListener('change', () => {
         if (state.selected) {
             loadDirectionsForHospital(state.selected, Boolean(state.routePolyline));
         }
@@ -3575,6 +4304,7 @@ function initDirectionsControls() {
 
     byId('directions-clear-btn')?.addEventListener('click', clearRouteOnMap);
     byId('active-route-clear')?.addEventListener('click', clearRouteOnMap);
+    byId('panorama-toggle-btn')?.addEventListener('click', toggleHospitalPanorama);
 }
 
 /**
@@ -3640,11 +4370,15 @@ function mountNaverMap() {
     try {
         state.routeOutlinePolyline?.setMap(null);
         state.routePolyline?.setMap(null);
+        state.waypointMarker?.setMap(null);
+        state.trafficLayer?.setMap(null);
     } catch {
         // 무시
     }
     state.routeOutlinePolyline = null;
     state.routePolyline = null;
+    state.waypointMarker = null;
+    state.trafficLayer = null;
 
     try {
         state.map?.destroy?.();
@@ -3724,6 +4458,9 @@ function mountNaverMap() {
         updateCircle();
         updateLocationMarker();
         updateMarkers();
+        if (state.trafficEnabled) {
+            syncTrafficLayer();
+        }
     };
 
     if (usingGlEngine) {
@@ -3744,6 +4481,21 @@ function mountNaverMap() {
     naver.maps.Event.addListener(state.map, 'idle', () => {
         state.diagnostics.idleEventCount += 1;
         updateMarkers();
+    });
+
+    // 지도 우클릭(데스크톱) 또는 롱탭(모바일 터치)으로 즉시 임의 출발 기준점 지정
+    naver.maps.Event.addListener(state.map, 'rightclick', event => {
+        const coord = event?.coord || event?.latlng;
+        if (coord && typeof coord.lat === 'function' && typeof coord.lng === 'function') {
+            setCustomOrigin(coord.lat(), coord.lng(), '우클릭 지정 출발지');
+        }
+    });
+
+    naver.maps.Event.addListener(state.map, 'longtap', event => {
+        const coord = event?.coord || event?.latlng;
+        if (coord && typeof coord.lat === 'function' && typeof coord.lng === 'function') {
+            setCustomOrigin(coord.lat(), coord.lng(), '지정 출발지');
+        }
     });
 
     for (const eventName of ['dragstart', 'zoom_changed']) {
@@ -3821,8 +4573,13 @@ function init() {
     updateSummary();
 
     syncResponsiveSheetLayout();
+    syncMobileMenuPlacement();
     initSheetDrag();
     initNotice();
+
+    byId('mobile-menu-btn')?.addEventListener('click', () => {
+        toggleMobileMenu();
+    });
 
     byId('developer-mode').addEventListener('toggle', () => {
         if (byId('developer-mode').open && state.selected) {
@@ -3863,6 +4620,17 @@ function init() {
     byId('keyword').addEventListener('focus', updateSearch);
     byId('refresh-button').addEventListener('click', () => loadData(true));
     byId('location-button').addEventListener('click', locate);
+    byId('traffic-toggle')?.addEventListener('click', toggleTrafficLayer);
+    byId('eta-rank-btn')?.addEventListener('click', () => {
+        const box = byId('eta-rank-box');
+        if (state.etaRankOpen && box && !box.hidden) {
+            state.etaRankOpen = false;
+            box.hidden = true;
+            byId('eta-rank-btn')?.setAttribute('aria-expanded', 'false');
+        } else {
+            loadEtaRanking();
+        }
+    });
 
     for (const id of [
         'filter-regional',
@@ -3870,7 +4638,12 @@ function init() {
         'filter-medical',
         'filter-other'
     ]) {
-        byId(id).addEventListener('change', updateMarkers);
+        byId(id).addEventListener('change', () => {
+            updateMarkers();
+            if (state.etaRankOpen) {
+                loadEtaRanking();
+            }
+        });
     }
 
     byId('sheet-close').addEventListener('click', closeSheet);
@@ -3879,6 +4652,10 @@ function init() {
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
             if (document.querySelector('dialog[open]')) {
+                return;
+            }
+            if (state.mobileMenuOpen) {
+                toggleMobileMenu(false);
                 return;
             }
             if (!byId('radius-popover').hidden) {
@@ -3935,6 +4712,7 @@ function init() {
 
     window.addEventListener('resize', () => {
         syncResponsiveSheetLayout();
+        syncMobileMenuPlacement();
         updateMarkers();
         updateMarquees();
     });
@@ -3943,6 +4721,7 @@ function init() {
     byId('refresh-button').disabled = false;
 
     loadData(false);
+    updateOriginAddress();
     locate();
 
     const previewMode = new URLSearchParams(window.location.search).get('preview');

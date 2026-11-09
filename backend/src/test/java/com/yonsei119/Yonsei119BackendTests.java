@@ -2,8 +2,10 @@ package com.yonsei119;
 
 import com.yonsei119.dto.DirectionsResponseDto;
 import com.yonsei119.dto.EmergencySnapshotDto;
+import com.yonsei119.dto.GeocodeResponseDto;
 import com.yonsei119.dto.HospitalDto;
 import com.yonsei119.dto.HospitalTypeDto;
+import com.yonsei119.dto.ReverseGeocodeResponseDto;
 import com.yonsei119.service.EmergencyDataService;
 import com.yonsei119.service.HospitalClassifier;
 import com.yonsei119.service.NaverDirectionsService;
@@ -279,5 +281,84 @@ class Yonsei119BackendTests {
         );
         assertFalse(errorParsed.success());
         assertTrue(errorParsed.items().isEmpty());
+    }
+
+    @Test
+    @DisplayName("7. 네이버 Directions 다중 옵션(trafast:traoptimal:traavoidtoll) 파싱 및 Reverse/Geocode 파싱이 정확히 동작해야 한다")
+    void testMultiOptionAndGeocodingParsing() {
+        String multiOptionJson = """
+                {
+                  "code": 0,
+                  "message": "길찾기를 성공하였습니다.",
+                  "route": {
+                    "trafast": [
+                      {
+                        "summary": { "distance": 8450, "duration": 840000, "tollFare": 1200, "taxiFare": 11800, "fuelPrice": 1120 },
+                        "path": [[127.9012, 37.3190], [127.9456, 37.3191]]
+                      }
+                    ],
+                    "traavoidtoll": [
+                      {
+                        "summary": { "distance": 9800, "duration": 1140000, "tollFare": 0, "taxiFare": 13200, "fuelPrice": 1290 },
+                        "path": [[127.9012, 37.3190], [127.9456, 37.3191]]
+                      }
+                    ]
+                  }
+                }
+                """;
+
+        DirectionsResponseDto dto = naverDirectionsService.parseDirectionsJson(
+                multiOptionJson, "directions5", "Directions 5", "trafast", "실시간 빠른길"
+        );
+        assertEquals(0, dto.code());
+        assertEquals(2, dto.alternatives().size(), "다중 옵션 요약이 2건 추출되어야 합니다.");
+        assertEquals("trafast", dto.alternatives().get(0).option());
+        assertEquals(1200, dto.alternatives().get(0).tollFare());
+        assertEquals("traavoidtoll", dto.alternatives().get(1).option());
+        assertEquals(0, dto.alternatives().get(1).tollFare());
+
+        String sampleRevGeo = """
+                {
+                  "status": { "code": 0, "name": "ok", "message": "done" },
+                  "results": [
+                    {
+                      "name": "roadaddr",
+                      "region": {
+                        "area1": { "name": "강원특별자치도", "alias": "강원" },
+                        "area2": { "name": "원주시" },
+                        "area3": { "name": "흥업면" }
+                      },
+                      "land": {
+                        "name": "연세대길",
+                        "number1": "1",
+                        "number2": "",
+                        "addition0": { "value": "연세대학교 미래캠퍼스" }
+                      }
+                    }
+                  ]
+                }
+                """;
+        ReverseGeocodeResponseDto revDto = naverDirectionsService.parseReverseGeocodeJson(sampleRevGeo, 37.3190, 127.9012);
+        assertEquals(0, revDto.code());
+        assertEquals("강원 원주시 흥업면", revDto.shortAddress());
+        assertTrue(revDto.roadAddress().contains("연세대길 1"));
+
+        String sampleGeo = """
+                {
+                  "status": "OK",
+                  "addresses": [
+                    {
+                      "roadAddress": "강원특별자치도 원주시 흥업면 연세대길 1",
+                      "jibunAddress": "강원특별자치도 원주시 흥업면 매지리 1496",
+                      "x": "127.9009998",
+                      "y": "37.2808750"
+                    }
+                  ]
+                }
+                """;
+        List<GeocodeResponseDto.GeocodeItemDto> geoItems = naverDirectionsService.parseGeocodeJson(sampleGeo);
+        assertEquals(1, geoItems.size());
+        assertEquals(37.2808750, geoItems.get(0).lat(), 0.0001);
+        assertEquals(127.9009998, geoItems.get(0).lng(), 0.0001);
     }
 }
