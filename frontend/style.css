@@ -823,6 +823,10 @@ h1 {
 .detail-section {
     margin-top: 16px;
     padding: 16px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     border: 1px solid #dce7f4;
     border-radius: 18px;
     background: #fff;
@@ -835,6 +839,8 @@ h1 {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 5px 9px;
+    min-width: 0;
+    max-width: 100%;
     margin-bottom: 12px;
 }
 
@@ -842,9 +848,12 @@ h1 {
     display: flex;
     align-items: center;
     gap: 7px;
+    min-width: 0;
     margin: 0;
     font-size: 15px;
     line-height: 1.45;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .section-heading h2::before {
@@ -1524,9 +1533,17 @@ h1 {
     .egen-grid-row,
     .equipment-matrix-grid,
     .severe-matrix-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
         gap: 6px;
         padding: 8px 10px;
+    }
+
+    .egen-cell,
+    .equipment-cell,
+    .severe-cat-box,
+    .severe-sub-item {
+        min-width: 0;
+        max-width: 100%;
     }
 
     .egen-cell,
@@ -2262,8 +2279,11 @@ h3 {
     position: static;
     display: flex;
     flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+    max-width: 100%;
     margin: 0;
 }
 
@@ -2477,24 +2497,41 @@ h3 {
  * 예상 소요 시간(ETA) 조회 섹션 스타일입니다.
  */
 .directions-section {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     border: 1px solid #ccebd7;
     background: linear-gradient(180deg, #f6fef9 0%, #ffffff 100%);
+}
+
+.directions-result {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .directions-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .directions-title-wrap {
     display: flex;
     align-items: center;
     gap: 7px;
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
 .naver-route-badge {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2508,6 +2545,12 @@ h3 {
 }
 
 .directions-status-badge {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     padding: 3px 8px;
     border-radius: 999px;
     background: #e6f7ed;
@@ -2522,35 +2565,63 @@ h3 {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     margin-bottom: 10px;
+    box-sizing: border-box;
 }
 
 .directions-select-group {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
-    flex: 1 1 240px;
+    flex: 1 1 320px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .directions-select {
-    flex: 1 1 120px;
-    min-height: 36px;
-    padding: 0 9px;
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    padding: 0 30px 0 10px;
     border: 1px solid #c5d9cc;
     border-radius: 8px;
-    background: #fff;
+    background-color: #fff;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 14px 14px;
+    -webkit-appearance: none;
+    appearance: none;
     color: #1e293b;
-    font-size: 12px;
+    font-size: 12.5px;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-sizing: border-box;
     cursor: pointer;
 }
 
 .directions-btn-group {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .directions-action-btn {
-    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
     padding: 0 12px;
     border: 1px solid #cbd5e1;
     border-radius: 8px;
@@ -2560,6 +2631,7 @@ h3 {
     font-family: var(--font-bold), sans-serif;
     cursor: pointer;
     white-space: nowrap;
+    box-sizing: border-box;
 }
 
 .directions-action-btn.primary {
@@ -2576,13 +2648,22 @@ h3 {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .directions-kpi-card {
+    min-width: 0;
+    max-width: 100%;
     padding: 10px;
     border: 1px solid #dbece1;
     border-radius: 10px;
     background: #ffffff;
+    box-sizing: border-box;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .directions-kpi-label {
@@ -2608,18 +2689,27 @@ h3 {
     margin-top: 2px;
     color: #64748b;
     font-size: 10px;
+    line-height: 1.35;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .directions-guide-details {
     margin-top: 8px;
     border-top: 1px dashed #d5e6dc;
     padding-top: 8px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 /* 구간별 실시간 교통 혼잡도(원활·서행·정체) 범례 및 도로 칩 스타일 */
 .directions-traffic-summary {
     margin-top: 8px;
     padding: 8px 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     border: 1px solid #dbece1;
     border-radius: 10px;
     background: #f8fafc;
@@ -2674,16 +2764,22 @@ h3 {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .directions-section-chip {
     display: inline-flex;
     align-items: center;
+    max-width: 100%;
     padding: 2px 7px;
     border-radius: 999px;
     font-size: 11px;
     font-weight: 700;
     border: 1px solid transparent;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    box-sizing: border-box;
 }
 
 .directions-section-chip.congestion-smooth {
@@ -2748,11 +2844,13 @@ body.dark-mode .directions-section-chip.congestion-jam {
     color: #334155;
     font-size: 12px;
     line-height: 1.6;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 640px) {
     .directions-kpi-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 
@@ -2783,27 +2881,32 @@ body.dark-mode .directions-section-chip.congestion-jam {
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
-    scrollbar-width: thin;
-    scrollbar-color: #b8c7da transparent;
 }
 
-.sheet-scroll::-webkit-scrollbar {
-    width: 8px;
-}
+@media (min-width: 641px) and (hover: hover) and (pointer: fine) {
+    .sheet-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: #b8c7da transparent;
+    }
 
-.sheet-scroll::-webkit-scrollbar-track {
-    background: transparent;
-}
+    .sheet-scroll::-webkit-scrollbar {
+        width: 8px;
+    }
 
-.sheet-scroll::-webkit-scrollbar-thumb {
-    border: 2px solid transparent;
-    border-radius: 999px;
-    background-clip: padding-box;
-    background-color: #b8c7da;
-}
+    .sheet-scroll::-webkit-scrollbar-track {
+        background: transparent;
+    }
 
-.sheet-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: #8fa5bf;
+    .sheet-scroll::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background-clip: padding-box;
+        background-color: #b8c7da;
+    }
+
+    .sheet-scroll::-webkit-scrollbar-thumb:hover {
+        background-color: #8fa5bf;
+    }
 }
 
 /* [대화면 모니터 모드] 중앙 둥근모서리 사각 모달 카드 */
@@ -3127,12 +3230,14 @@ body.dark-mode .close-button:hover {
     color: #ffffff;
 }
 
-body.dark-mode .sheet-scroll {
-    scrollbar-color: #475569 transparent;
-}
+@media (min-width: 641px) and (hover: hover) and (pointer: fine) {
+    body.dark-mode .sheet-scroll {
+        scrollbar-color: #475569 transparent;
+    }
 
-body.dark-mode .sheet-scroll::-webkit-scrollbar-thumb {
-    background-color: #475569;
+    body.dark-mode .sheet-scroll::-webkit-scrollbar-thumb {
+        background-color: #475569;
+    }
 }
 
 body.dark-mode .safety-note {
@@ -3172,7 +3277,13 @@ body.dark-mode .directions-status-badge {
     color: #6ee7b7;
 }
 
-body.dark-mode .directions-select,
+body.dark-mode .directions-select {
+    background-color: #1e293b;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
 body.dark-mode .directions-action-btn:not(.primary) {
     background: #1e293b;
     border-color: #334155;
@@ -3718,7 +3829,11 @@ body.dark-mode .notice-copy strong {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     margin-bottom: 10px;
+    box-sizing: border-box;
 }
 
 .directions-alt-btn {
@@ -3726,6 +3841,9 @@ body.dark-mode .notice-copy strong {
     flex-direction: column;
     justify-content: center;
     gap: 3px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     padding: 9px 10px;
     border: 1px solid #94a3b8;
     border-radius: 10px;
@@ -3734,6 +3852,9 @@ body.dark-mode .notice-copy strong {
     font: inherit;
     text-align: left;
     cursor: pointer;
+    box-sizing: border-box;
+    word-break: keep-all;
+    overflow-wrap: break-word;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
     transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -3753,6 +3874,8 @@ body.dark-mode .notice-copy strong {
     font-size: 0.72rem;
     font-weight: 800;
     color: #475569;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .directions-alt-btn.is-active .directions-alt-title {
@@ -3764,6 +3887,8 @@ body.dark-mode .notice-copy strong {
     font-weight: 900;
     color: #0f172a;
     line-height: 1.25;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 .directions-alt-meta {
@@ -3771,6 +3896,8 @@ body.dark-mode .notice-copy strong {
     font-weight: 700;
     color: #64748b;
     line-height: 1.3;
+    word-break: keep-all;
+    overflow-wrap: break-word;
 }
 
 @media (max-width: 720px) {
@@ -4086,5 +4213,89 @@ body.dark-mode .panorama-view {
 
     .panorama-view {
         height: 210px;
+    }
+
+    /* 모바일 및 안드로이드/iOS WebView 환경에서 자동차 경로 탐색 컨트롤 박스 이탈 원천 차단 */
+    .detail-section {
+        padding: 14px;
+    }
+
+    .directions-toolbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 7px;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .directions-select-group {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .directions-select {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        min-height: 40px;
+        font-size: 13px;
+    }
+
+    .directions-btn-group {
+        display: flex;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        gap: 6px;
+    }
+
+    .directions-btn-group .directions-action-btn {
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 40px;
+        justify-content: center;
+        text-align: center;
+    }
+
+    /* 모바일 상단 활성 경로 배너가 좌측 상단 ☰ 메뉴 버튼과 겹치지 않도록 우측 영역에 배치 */
+    .active-route-banner {
+        left: calc(var(--edge) + env(safe-area-inset-left) + 52px);
+        right: calc(var(--edge) + env(safe-area-inset-right));
+        transform: none;
+        width: auto;
+        max-width: none;
+        min-height: 44px;
+        justify-content: space-between;
+        padding: 6px 10px;
+    }
+}
+
+/* 초소형 모바일 디스플레이(iPhone SE 320px, 갤럭시 폴드 커버 등) 대응 */
+@media (max-width: 360px) {
+    .directions-alt-btn {
+        padding: 8px;
+    }
+
+    .directions-alt-eta {
+        font-size: 0.8rem;
+    }
+
+    .directions-alt-meta {
+        font-size: 0.66rem;
+    }
+}
+
+/* iOS Safari / WKWebView 전용: <select> 터치 시 화면이 강제 확대(Auto-Zoom)되는 WebKit 특성 방지 */
+@supports (-webkit-touch-callout: none) {
+    @media (max-width: 700px), (any-pointer: coarse) {
+        .directions-select {
+            font-size: 16px;
+            letter-spacing: -0.03em;
+        }
     }
 }

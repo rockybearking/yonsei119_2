@@ -2186,7 +2186,11 @@ function populateWaypointSelect(destinationHospital) {
     for (const { hospital, dist } of nearby) {
         const opt = document.createElement('option');
         opt.value = `${hospital.lng},${hospital.lat}|${hospital.name}`;
-        opt.textContent = `경유: ${hospital.name} (${dist.toFixed(1)}km · 응급실 ${bedValue(hospital.beds?.hvec)})`;
+        const erAvail = hospital.beds?.hvec?.available;
+        const shortEr = typeof erAvail === 'number'
+            ? (erAvail > 0 ? `응급실 ${erAvail}석` : `응급실 포화(${erAvail})`)
+            : '응급실 확인필요';
+        opt.textContent = `경유: ${hospital.name} (${dist.toFixed(1)}km · ${shortEr})`;
         select.append(opt);
     }
 
@@ -2297,15 +2301,15 @@ async function loadDirectionsForHospital(hospital, autoDraw = false) {
                     ? (alt.distanceMeters / 1000).toFixed(2)
                     : alt.distanceKm;
                 const tollInfo = alt.tollFare > 0
-                    ? `통행료 ${alt.tollFare.toLocaleString('ko-KR')}원`
+                    ? `통행료\u00A0${alt.tollFare.toLocaleString('ko-KR')}원`
                     : '무료도로';
                 const taxiInfo = alt.taxiFare > 0
-                    ? ` · 택시 ${alt.taxiFare.toLocaleString('ko-KR')}원`
+                    ? ` · 택시\u00A0${alt.taxiFare.toLocaleString('ko-KR')}원`
                     : '';
                 altBtn.append(
                     node('span', 'directions-alt-title', alt.optionLabel),
                     node('strong', 'directions-alt-eta', alt.durationText),
-                    node('span', 'directions-alt-meta', `${exactAltKm} km · ${tollInfo}${taxiInfo}`)
+                    node('span', 'directions-alt-meta', `${exactAltKm}\u00A0km · ${tollInfo}${taxiInfo}`)
                 );
                 altBtn.addEventListener('click', () => {
                     if (state.selectedDirectionOption !== alt.option) {
@@ -4258,7 +4262,7 @@ function syncMobileMenuPlacement() {
         return;
     }
 
-    const isMobile = window.innerWidth <= 640;
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
     if (isMobile) {
         if (mapActions.parentElement !== mobileDrawer) {
             mobileDrawer.appendChild(mapActions);
