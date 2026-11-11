@@ -27,8 +27,8 @@ COPY gradlew gradlew.bat settings.gradle build.gradle ./
 COPY gradle ./gradle
 COPY backend/build.gradle ./backend/build.gradle
 
-# 실행 권한 부여
-RUN chmod +x ./gradlew
+# 실행 권한 부여 및 의존성 레이어 사전 다운로드 (소스코드만 수정된 경우 재다운로드 생략)
+RUN chmod +x ./gradlew && ./gradlew :backend:dependencies --no-daemon
 
 # 프론트엔드 및 백엔드 전체 소스 복사
 COPY frontend ./frontend

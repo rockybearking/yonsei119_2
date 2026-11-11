@@ -112,9 +112,9 @@ const DEFAULT_NAVER_DARK_STYLE_ID = '4b12b380-f70c-4d42-85df-ecf7961ff041';
  *   변경 후: const DEFAULT_ORIGIN = { lat: 37.5621, lng: 126.9408, label: '연세대 세브란스병원' };
  */
 const DEFAULT_ORIGIN = {
-    lat: 37.5668,
-    lng: 126.9786,
-    label: '서울시청'
+    lat: 37.31904016818661,
+    lng: 127.90122866146605,
+    label: '연세대학교 미래캠퍼스 (기본 위치)'
 };
 
 /* --------------------------------------------------------------------------
@@ -337,6 +337,9 @@ const state = {
     loading: false,
     previousFocus: null,
     inflight: null,
+    inflightForce: false,
+    statusTimer: null,
+    renderedDevHospitalRef: null,
     clusterItems: [],
     hasFitted: false,
     darkMode: true,
@@ -657,16 +660,78 @@ function updateMarquees() {
 
 /**
  * [함수 역할]
- * 검색 패널 내 상태 안내줄(`index.html`의 `#status`)에 진행 상태·오류 메시지를 표시하거나 숨깁니다.
- * - 빈 문자열(`''`)을 넘기면 `hidden = true`가 되어 화면 공간을 차지하지 않습니다.
+ * 상단 비침투형 토스트(`index.html`의 `#status-toast` / `#status`)에 진행 상태·오류 메시지를 표시하거나 숨깁니다.
+ * - `popover="manual"`을 사용하여 지도 조작 중 실수로 닫히지 않으며, 자동 타이머 또는 닫기 버튼으로 해제됩니다.
+ * - 스크린 리더에는 중간 로딩 문구(`…`) 스팸을 제외하고 의미 있는 완료·오류 결과만 중앙 라이브 영역으로 공지합니다.
  */
 function setStatus(message) {
     const statusEl = byId('status');
+    const toastEl = byId('status-toast');
     if (!statusEl) {
         return;
     }
-    statusEl.textContent = message;
-    statusEl.hidden = !message;
+
+    if (state.statusTimer) {
+        clearTimeout(state.statusTimer);
+        state.statusTimer = null;
+    }
+
+    const text = message ? String(message).trim() : '';
+    statusEl.textContent = text;
+    statusEl.hidden = !text;
+
+    if (!toastEl) {
+        return;
+    }
+
+    const politeAnnouncer = byId('status-announcer');
+    const alertAnnouncer = byId('alert-announcer');
+
+    if (!text) {
+        toastEl.dataset.open = 'false';
+        delete toastEl.dataset.tone;
+        if (typeof toastEl.hidePopover === 'function') {
+            try {
+                if (toastEl.matches(':popover-open')) {
+                    toastEl.hidePopover();
+                }
+            } catch {
+                // 미열림 상태 예외 무시
+            }
+        }
+        return;
+    }
+
+    const isError = /(실패|오류|못했|거부|없습니다)/.test(text);
+    const isInterstitial = /(확인 중…|조회하고 있습니다…)$/.test(text);
+
+    toastEl.dataset.tone = isError ? 'error' : 'info';
+    toastEl.dataset.open = 'true';
+    if (typeof toastEl.showPopover === 'function') {
+        try {
+            if (!toastEl.matches(':popover-open')) {
+                toastEl.showPopover();
+            }
+        } catch {
+            // 구형 환경에서는 data-open 폴백 스타일이 동작
+        }
+    }
+
+    if (!isInterstitial) {
+        if (isError && alertAnnouncer) {
+            alertAnnouncer.textContent = text;
+        } else if (politeAnnouncer) {
+            politeAnnouncer.textContent = text;
+        }
+    }
+
+    // 지도 SDK 로드 실패 같은 치명적 초기 오류나 진행 중 로딩 문구는 수동 해제/완료 전까지 유지하고, 일반 알림은 자동 닫힘 처리
+    const isSdkFatalError = !state.map && text.includes('SDK');
+    if (!isInterstitial && !isSdkFatalError) {
+        state.statusTimer = setTimeout(() => {
+            setStatus('');
+        }, isError ? 6500 : 4200);
+    }
 }
 
 /**
@@ -813,6 +878,9 @@ function initRadius() {
         if (!panel.hidden && !event.target.closest('.radius-tool')) {
             closeRadius();
         }
+        if (state.mobileMenuOpen && !event.target.closest('#mobile-top-left-menu')) {
+            toggleMobileMenu(false);
+        }
         if (!event.target.closest('#search-panel')) {
             byId('search-results').hidden = true;
         }
@@ -844,6 +912,46 @@ function initRadius() {
 
 /**
  * [함수 역할]
+ * 백엔드 공개 환경설정(`GET /api/config`)을 조회하여 기본 출발 좌표(`DEFAULT_ORIGIN`)와
+ * 네이버 다크 지도 스타일 ID(`state.naverDarkStyleId`)를 서버 설정(`application.yml`)과 동기화합니다.
+ */
+async function syncFrontendConfig() {
+    try {
+        const response = await fetch('/api/config', {
+            priority: 'low',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            return;
+        }
+        const cfg = await response.json();
+        if (Number.isFinite(cfg.defaultLat) && Number.isFinite(cfg.defaultLng)) {
+            DEFAULT_ORIGIN.lat = cfg.defaultLat;
+            DEFAULT_ORIGIN.lng = cfg.defaultLng;
+            if (cfg.defaultLabel) {
+                DEFAULT_ORIGIN.label = cfg.defaultLabel;
+            }
+            if (!state.locationKnown) {
+                state.origin = { lat: DEFAULT_ORIGIN.lat, lng: DEFAULT_ORIGIN.lng };
+                state.originLabel = DEFAULT_ORIGIN.label;
+                updateRadiusUI();
+                updateCircle();
+                updateMarkers();
+            }
+        }
+        if (cfg.naverDarkStyleId && cfg.naverDarkStyleId !== state.naverDarkStyleId) {
+            state.naverDarkStyleId = cfg.naverDarkStyleId;
+            if (state.darkMode && state.map) {
+                mountNaverMap();
+            }
+        }
+    } catch {
+        // 오프라인 또는 정적 미리보기 환경에서는 내장 기본값 유지
+    }
+}
+
+/**
+ * [함수 역할]
  * 동시에 여러 곳에서 새로고침을 눌러도 백엔드로 중복 요청이 날아가지 않도록
  * 진행 중인 Promise(`state.inflight`)를 공유(In-flight Deduplication)하는 데이터 로드 진입점입니다.
  *
@@ -858,15 +966,20 @@ function initRadius() {
  * @returns {Promise<void>}
  */
 function loadData(forceRefresh = false) {
-    if (state.inflight) {
+    if (state.inflight && (!forceRefresh || state.inflightForce)) {
         return state.inflight;
     }
 
-    state.inflight = fetchData(forceRefresh).finally(() => {
-        state.inflight = null;
+    state.inflightForce = Boolean(forceRefresh);
+    const requestPromise = fetchData(forceRefresh).finally(() => {
+        if (state.inflight === requestPromise) {
+            state.inflight = null;
+            state.inflightForce = false;
+        }
     });
+    state.inflight = requestPromise;
 
-    return state.inflight;
+    return requestPromise;
 }
 
 /**
@@ -975,7 +1088,7 @@ async function fetchData(forceRefresh = false) {
         if (state.selected) {
             const fresh = state.hospitals.find(item => item.id === state.selected.id);
             if (fresh) {
-                openHospital(fresh, false);
+                openHospital(fresh, false, { skipDirections: true });
             } else {
                 closeSheet();
             }
@@ -4349,7 +4462,6 @@ function renderBeds(hospital) {
         bedTimeEl.textContent = '보고 시각 미정보';
     }
 
-    renderRawBeds(hospital);
     renderErBeds(hospital);
     renderInpatientBeds(hospital);
 
@@ -4358,6 +4470,22 @@ function renderBeds(hospital) {
     if (reported && bedTimeEl) {
         bedTimeEl.textContent = `보고 ${reported.display}`;
     }
+}
+
+/**
+ * [함수 역할]
+ * 상세 시트 하단 `<details id="developer-mode">`가 실제로 펼쳐졌을 때만
+ * 수백 개의 API 원본 코드·값 비교 DOM 노드를 지연 생성(Lazy DOM Rendering)하여 카드 클릭 반응성(INP)을 보호합니다.
+ */
+function renderDeveloperInspector(hospital) {
+    if (!hospital) {
+        return;
+    }
+    renderRawBeds(hospital);
+    renderBasic(hospital);
+    renderRawSevere(hospital);
+    renderRawMessages(hospital);
+    state.renderedDevHospitalRef = hospital;
 }
 
 /* --------------------------------------------------------------------------
@@ -4919,8 +5047,9 @@ function renderContacts(hospital) {
  *
  * @param {Object} hospital 열 대상 병원 객체 (`HospitalDto`)
  * @param {boolean} [focus=true] 시트 열림 시 스크롤을 맨 위로 올리고 닫기 버튼으로 포커스를 옮길지 여부
+ * @param {{ skipDirections?: boolean }} [options={}] 백그라운드 병상 데이터 갱신 시 길찾기 API 재호출을 생략할지 여부
  */
-function openHospital(hospital, focus = true) {
+function openHospital(hospital, focus = true, options = {}) {
     closeRadius();
     byId('search-results').hidden = true;
 
@@ -4938,6 +5067,7 @@ function openHospital(hospital, focus = true) {
     const isDifferentHospital = state.selected?.id !== hospital.id;
     if (isDifferentHospital) {
         byId('developer-mode').open = false;
+        state.renderedDevHospitalRef = null;
         state.sheetRouteData = null;
     }
 
@@ -4979,12 +5109,17 @@ function openHospital(hospital, focus = true) {
     renderBeds(hospital);
     renderEquipment(hospital);
     renderSevere(hospital);
-    renderBasic(hospital);
-    renderRawSevere(hospital);
-    renderRawMessages(hospital);
 
-    // 네이버 Directions 5 / 15 자동차 경로 및 예상 소요 시간(ETA) 자동 조회
-    loadDirectionsForHospital(hospital, false);
+    if (byId('developer-mode')?.open) {
+        renderDeveloperInspector(hospital);
+    } else {
+        state.renderedDevHospitalRef = null;
+    }
+
+    // 네이버 Directions 5 / 15 자동차 경로 및 예상 소요 시간(ETA) 조회 (단순 병상 스냅샷 갱신 시에는 중복 호출 생략)
+    if (!options.skipDirections) {
+        loadDirectionsForHospital(hospital, false);
+    }
 
     const failed = Object.entries(state.sources)
         .filter(([, loaded]) => !loaded)
@@ -5846,9 +5981,26 @@ function applyTheme(isDark, remountMap = true) {
  * 테마 토글 버튼(`index.html`의 `#theme-toggle`) 클릭 이벤트를 초기화합니다.
  */
 function initThemeToggle() {
-    applyTheme(true, false);
+    let initialDark = true;
+    try {
+        const saved = localStorage.getItem('yonsei119-theme');
+        if (saved === 'light') {
+            initialDark = false;
+        } else if (saved === 'dark') {
+            initialDark = true;
+        }
+    } catch {
+        // 스토리지 제한 환경에서는 기본 다크 테마 유지
+    }
+    applyTheme(initialDark, false);
     byId('theme-toggle')?.addEventListener('click', () => {
-        applyTheme(!state.darkMode, true);
+        const nextDark = !state.darkMode;
+        try {
+            localStorage.setItem('yonsei119-theme', nextDark ? 'dark' : 'light');
+        } catch {
+            // 스토리지 쓰기 실패 무시
+        }
+        applyTheme(nextDark, true);
     });
 }
 
@@ -5878,9 +6030,15 @@ function init() {
         toggleMobileMenu();
     });
 
+    byId('status-toast-close')?.addEventListener('click', () => {
+        setStatus('');
+    });
+
     byId('developer-mode').addEventListener('toggle', () => {
         if (byId('developer-mode').open && state.selected) {
-            loadData(false);
+            if (state.renderedDevHospitalRef !== state.selected) {
+                renderDeveloperInspector(state.selected);
+            }
         }
     });
 
@@ -6022,9 +6180,13 @@ function init() {
     byId('location-button').disabled = false;
     byId('refresh-button').disabled = false;
 
+    syncFrontendConfig();
     loadData(false);
-    updateOriginAddress();
-    locate();
+    if (navigator.geolocation) {
+        locate();
+    } else {
+        updateOriginAddress();
+    }
 
     const previewMode = new URLSearchParams(window.location.search).get('preview');
     if (previewMode) {

@@ -203,11 +203,12 @@ public class EmergencyApiController {
             @RequestParam(name = "startLng") double startLng,
             @RequestParam(name = "radiusKm", defaultValue = "20") double radiusKm,
             @RequestParam(name = "limit", defaultValue = "5") int limit,
-            @RequestParam(name = "includeOther", defaultValue = "false") boolean includeOther
+            @RequestParam(name = "includeOther", defaultValue = "false") boolean includeOther,
+            @RequestParam(name = "option", defaultValue = "trafast") String option
     ) {
         EmergencySnapshotDto snapshot = emergencyDataService.getSnapshot(false);
         List<HospitalEtaRankDto> ranked = naverDirectionsService.rankHospitalsByDrivingTime(
-                snapshot.hospitals(), startLat, startLng, radiusKm, limit, includeOther
+                snapshot.hospitals(), startLat, startLng, radiusKm, limit, includeOther, option
         );
         return ResponseEntity.ok(ranked);
     }

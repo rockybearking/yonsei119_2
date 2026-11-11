@@ -90,7 +90,12 @@ tasks.withType(Javadoc).configureEach {
 tasks.register('copyFrontendToStatic', Copy) {
     description = 'Copies frontend static files into backend static resources for single-JAR deployment.'
     from('../frontend') {
-        exclude '**/.DS_Store', '**/Thumbs.db'
+        // README 문서 전용 대용량 스크린샷(약 2MB)은 배포 JAR 용량 절감을 위해 제외하고 런타임 필수 자산만 포함합니다.
+        exclude '**/.DS_Store', '**/Thumbs.db', 'Assets/**'
+    }
+    from('../frontend/Assets') {
+        include '공공데이터포탈_logo.png'
+        into 'Assets'
     }
     into layout.buildDirectory.dir('resources/main/static')
 }

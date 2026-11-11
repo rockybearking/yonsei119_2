@@ -73,6 +73,9 @@ public class EmergencyDataService {
     /** 스냅샷 생성 시각({@code updatedAt}) 표기를 위한 한국 표준시(KST, UTC+9) 시간대 */
     private static final ZoneId KST_ZONE = ZoneId.of("Asia/Seoul");
 
+    /** 수동 강제 새로고침({@code ?refresh=true}) 연타 및 동시 호출로부터 공공데이터 트래픽 한도를 보호하기 위한 최소 쿨다운(초) */
+    private static final long MIN_FORCE_REFRESH_COOLDOWN_SECONDS = 15L;
+
     private final NmcOpenApiClient openApiClient;
     private final HospitalClassifier classifier;
     private final Yonsei119Properties properties;
@@ -158,7 +161,7 @@ public class EmergencyDataService {
         }
         CompletableFuture.runAsync(() -> {
             try {
-                refreshCacheSynchronously(reason);
+                refreshCacheSynchronously(reason, false, null);
             } finally {
                 backgroundRefreshInProgress.set(false);
             }
@@ -173,7 +176,7 @@ public class EmergencyDataService {
      * - [어디서 왔는가 (Incoming)] : {@code EmergencyApiController.getHospitals()}, {@code rankDirections()}, {@code geocode()}
      * - [어디로 가는가 (Outgoing)] :
      *   - 캐시 히트 시: 메모리의 {@code cachedSnapshot}을 {@code asCachedSnapshot()}({@code cached = true})으로 감싸 0.01초 내 즉시 반환!
-     *   - 캐시 미스 또는 {@code forceRefresh = true}(화면 '새로고침' 클릭) 시: {@link #refreshCacheSynchronously(String)} 호출!
+     *   - 캐시 미스 또는 {@code forceRefresh = true}(화면 '새로고침' 클릭) 시: {@link #refreshCacheSynchronously(String, boolean, Instant)} 호출!
      *
      * @param forceRefresh {@code true}이면 기존 캐시를 무시하고 즉시 공공데이터포털에서 최신 병상 데이터를 새로 받아옵니다.
      * @return 통합된 {@link EmergencySnapshotDto}
@@ -191,17 +194,42 @@ public class EmergencyDataService {
             return asCachedSnapshot(current);
         }
 
-        return refreshCacheSynchronously(forceRefresh ? "사용자 수동 새로고침 요청" : "최초 콜드 스타트 동기 수집");
+        if (forceRefresh && current != null
+                && now.isBefore(this.cachedAt.plusSeconds(MIN_FORCE_REFRESH_COOLDOWN_SECONDS))) {
+            return asCachedSnapshot(current);
+        }
+
+        return refreshCacheSynchronously(
+                forceRefresh ? "사용자 수동 새로고침 요청" : "최초 콜드 스타트 동기 수집",
+                forceRefresh,
+                now
+        );
     }
 
     /**
      * [메서드 역할]
      * 동기화 블록({@code synchronized (cacheLock)}) 안에서 안전하게 신규 스냅샷을 만들어 {@code cachedSnapshot}을 교체합니다.
-     * 만약 외부 공공데이터포털 전체 장애로 빈 목록이 오더라도 기존 {@code current} 캐시를 날리지 않고 보존합니다!
+     * 동시 요청 병합(Request Coalescing)과 최소 쿨다운을 적용해 중복 외부 API 호출을 차단하며,
+     * 외부 공공데이터포털 전체 장애로 빈 목록이 오더라도 기존 {@code current} 캐시를 날리지 않고 보존합니다!
      */
-    private EmergencySnapshotDto refreshCacheSynchronously(String reason) {
+    private EmergencySnapshotDto refreshCacheSynchronously(
+            String reason,
+            boolean respectForceCooldown,
+            Instant requestEnteredAt
+    ) {
         synchronized (cacheLock) {
             EmergencySnapshotDto current = this.cachedSnapshot;
+            Instant currentCachedAt = this.cachedAt;
+            if (current != null) {
+                if (requestEnteredAt != null && currentCachedAt.isAfter(requestEnteredAt)) {
+                    return asCachedSnapshot(current);
+                }
+                if (respectForceCooldown
+                        && Instant.now().isBefore(currentCachedAt.plusSeconds(MIN_FORCE_REFRESH_COOLDOWN_SECONDS))) {
+                    return asCachedSnapshot(current);
+                }
+            }
+
             long startMs = System.currentTimeMillis();
             try {
                 EmergencySnapshotDto fresh = buildFreshSnapshot();
@@ -222,6 +250,14 @@ public class EmergencyDataService {
                 }
                 throw ex;
             }
+        }
+    }
+
+    /** 단위/통합 테스트에서 초기 캐시 스냅샷 상태(부분·전체 장애 폴백 검증용)를 설정합니다. */
+    public void setCachedSnapshotForTest(EmergencySnapshotDto snapshot) {
+        synchronized (cacheLock) {
+            this.cachedSnapshot = snapshot;
+            this.cachedAt = snapshot != null ? Instant.now() : Instant.EPOCH;
         }
     }
 
@@ -303,7 +339,10 @@ public class EmergencyDataService {
 
             Map<String, String> mergedBasic = new LinkedHashMap<>(basicFields);
             for (Map.Entry<String, String> entry : listFields.entrySet()) {
-                mergedBasic.putIfAbsent(entry.getKey(), entry.getValue());
+                String existing = mergedBasic.get(entry.getKey());
+                if (existing == null || existing.isBlank()) {
+                    mergedBasic.put(entry.getKey(), entry.getValue());
+                }
             }
 
             Map<String, String> traumaFields = traumaBasicById.getOrDefault(
@@ -383,14 +422,24 @@ public class EmergencyDataService {
                     prev != null ? prev.erTel() : null
             ));
 
-            Map<String, String> classificationFields = new LinkedHashMap<>(basicFields);
-            classificationFields.putAll(listFields);
-            classificationFields.put("dutyname", firstNonBlank(listFields.get("dutyname"), basicFields.get("dutyname")));
-            classificationFields.put("dutyaddr", firstNonBlank(listFields.get("dutyaddr"), basicFields.get("dutyaddr")));
+            Map<String, String> classificationFields = new LinkedHashMap<>(mergedBasic);
+            String resolvedDutyName = firstNonBlank(listFields.get("dutyname"), basicFields.get("dutyname"));
+            if (!resolvedDutyName.isEmpty()) {
+                classificationFields.put("dutyname", resolvedDutyName);
+            }
+            String resolvedDutyAddr = firstNonBlank(listFields.get("dutyaddr"), basicFields.get("dutyaddr"));
+            if (!resolvedDutyAddr.isEmpty()) {
+                classificationFields.put("dutyaddr", resolvedDutyAddr);
+            }
 
-            // `HospitalClassifier.java`로 권역응급 여부 및 상급종합/의료원/기타 등급 판별
-            boolean regional = classifier.isRegional(classificationFields);
-            HospitalTypeDto type = classifier.classify(classificationFields, name);
+            // `list`·`basic`이 동시에 빈 장애 상황에서는 직전 정상 스냅샷(`prev`)의 권역/종별 등급을 보존합니다.
+            boolean upstreamIdentityMissing = listItems.isEmpty() && basicItems.isEmpty() && traumaListItems.isEmpty();
+            boolean regional = (upstreamIdentityMissing && prev != null)
+                    ? (prev.regional() || classifier.isRegional(classificationFields))
+                    : classifier.isRegional(classificationFields);
+            HospitalTypeDto type = (upstreamIdentityMissing && prev != null && prev.type() != null)
+                    ? prev.type()
+                    : classifier.classify(classificationFields, name);
             boolean hasTrauma = traumaFields != null && !traumaFields.isEmpty();
 
             if (regional) {
@@ -417,7 +466,7 @@ public class EmergencyDataService {
                     lng,
                     regional,
                     type,
-                    Map.copyOf(basicFields.isEmpty() ? mergedBasic : basicFields),
+                    Map.copyOf(mergedBasic),
                     hasTrauma ? Map.copyOf(traumaFields) : null,
                     beds != null ? Map.copyOf(beds) : null,
                     List.copyOf(messages),

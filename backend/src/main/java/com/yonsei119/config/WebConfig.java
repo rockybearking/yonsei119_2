@@ -1,11 +1,15 @@
 package com.yonsei119.config;
 
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
 import org.springframework.http.CacheControl;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.io.IOException;
+import java.time.Duration;
 
 /**
  * ============================================================================
@@ -56,13 +60,39 @@ public class WebConfig implements WebMvcConfigurer {
      */
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/Assets/**")
+                .addResourceLocations(
+                        "file:./frontend/Assets/",
+                        "file:../frontend/Assets/",
+                        "classpath:/static/Assets/"
+                )
+                .setCacheControl(CacheControl.maxAge(Duration.ofDays(7)).cachePublic())
+                .setUseLastModified(true)
+                .setEtagGenerator(WebConfig::computeWeakMetadataEtag);
+
         registry.addResourceHandler("/**")
                 .addResourceLocations(
                         "file:./frontend/",
                         "file:../frontend/",
                         "classpath:/static/"
                 )
-                .setCacheControl(CacheControl.noCache());
+                .setCacheControl(CacheControl.noCache())
+                .setUseLastModified(true)
+                .setEtagGenerator(WebConfig::computeWeakMetadataEtag);
+    }
+
+    /**
+     * 응답 본문을 메모리에 버퍼링하지 않고 파일 메타데이터(수정 시각·크기)만으로 경량 Weak ETag를 생성합니다.
+     * ({@code ShallowEtagHeaderFilter}와 달리 {@code forward:/index.html} 내부 디스패치 및 GZIP 스트리밍과 충돌하지 않습니다.)
+     */
+    private static String computeWeakMetadataEtag(Resource resource) {
+        try {
+            long lastModified = resource.lastModified();
+            long contentLength = resource.contentLength();
+            return "W/\"" + Long.toHexString(lastModified) + "-" + Long.toHexString(contentLength) + "\"";
+        } catch (IOException ex) {
+            return "";
+        }
     }
 
     /**

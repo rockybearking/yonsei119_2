@@ -27,6 +27,12 @@ spring:
   application:
     # 애플리케이션 식별 이름 (로그 및 모니터링 표시용)
     name: yonsei119-backend
+  config:
+    # 로컬 개발 시 Git에 커밋되지 않는 `.env` 또는 `application-local.yml`에서 비밀키를 자동 로드합니다.
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+      - optional:classpath:application-local.yml
   web:
     resources:
       # [기능 설명] 정적 리소스(index.html, app.js, style.css) 브라우저 캐시 유지 시간(초)
@@ -63,8 +69,9 @@ yonsei119:
     # OpenAPI 기본 URL (`NmcOpenApiClient.java`에서 이 주소 뒤에 `/getEmrrmRltmUsefulSckbdInfoInqire` 등을 붙여 호출)
     base-url: ${NEMC_API_BASE_URL:https://apis.data.go.kr/B552657/ErmctInfoInqireService}
 
-    # 공공데이터포털 일반 인증키 (`NmcOpenApiClient.normalizeServiceKey()`가 Encoded/Decoded 여부를 자동 판별하여 처리)
-    service-key: ${NEMC_API_SERVICE_KEY:s%2FvWNiKH1YndVRu2mPOq7OXAIj%2Byk0M3JTgvN%2B8UVdSFPq8SBR7zuUdG3mxklTrj6WYIiUidSIUwgE8bz09fzQ%3D%3D}
+    # 공공데이터포털 일반 인증키 (`NmcOpenApiClient.ensureUrlEncodedServiceKey()`가 Encoded/Decoded 여부를 자동 판별하여 처리)
+    # 보안상 소스코드에 평문 시크릿을 두지 않으며, 운영 환경변수(`NEMC_API_SERVICE_KEY`) 또는 로컬 `.env`에서 주입받습니다.
+    service-key: ${NEMC_API_SERVICE_KEY:}
 
     # [기능 설명] 실시간 병원 스냅샷 인메모리 캐시 유효 시간(초, 기본 1200초 = 20분)
     # -> 연결되는 Java 코드: `EmergencyDataService.getSnapshot()`의 캐시 만료 판정 로직
@@ -111,7 +118,8 @@ yonsei119:
 
     # NCP Application Client Secret (`X-NCP-APIGW-API-KEY`)
     # -> 오직 백엔드 `NaverDirectionsService.java`에서만 HTTP 헤더에 실어 호출하며, 브라우저로는 절대 노출되지 않습니다.
-    client-secret: ${NAVER_MAP_CLIENT_SECRET:YwgMcb3rLbfCtBqtLcM53ECu9xuYWScw35MjM8k2}
+    # -> 보안상 평문 기본값을 제거하고 운영 환경변수(`NAVER_MAP_CLIENT_SECRET`) 또는 로컬 `.env`에서 주입받습니다.
+    client-secret: ${NAVER_MAP_CLIENT_SECRET:}
 
     # 네이버 Directions 5 API 엔드포인트 (최대 경유지 5곳, 빠른 실시간 경로/예상 소요시간 조회)
     directions5-url: ${NAVER_DIRECTIONS5_URL:https://maps.apigw.ntruss.com/map-direction/v1/driving}

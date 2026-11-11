@@ -1,7 +1,9 @@
 package com.yonsei119;
 
+import com.yonsei119.controller.EmergencyApiController;
 import com.yonsei119.dto.DirectionsResponseDto;
 import com.yonsei119.dto.EmergencySnapshotDto;
+import com.yonsei119.dto.FrontendConfigDto;
 import com.yonsei119.dto.GeocodeResponseDto;
 import com.yonsei119.dto.HospitalDto;
 import com.yonsei119.dto.HospitalTypeDto;
@@ -14,13 +16,22 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -51,8 +62,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   (장고 테스트의 {@code @override_settings(NEMC_AUTO_REFRESH_ENABLED=False)} 데코레이터와 똑같은 기능입니다.)
  * ============================================================================
  */
-@SpringBootTest(properties = "yonsei119.nemc.auto-refresh-enabled=false")
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "yonsei119.nemc.auto-refresh-enabled=false"
+)
 class Yonsei119BackendTests {
+
+    @LocalServerPort
+    private int port;
 
     /** 테스트 대상 빈(Bean)들을 Spring 컨테이너로부터 자동 주입받습니다 ({@code @Autowired}). */
     @Autowired
@@ -66,6 +83,9 @@ class Yonsei119BackendTests {
 
     @Autowired
     private NaverDirectionsService naverDirectionsService;
+
+    @Autowired
+    private EmergencyApiController emergencyApiController;
 
     /**
      * [테스트 1] {@code service/HospitalClassifier.java} 검증
@@ -158,8 +178,8 @@ class Yonsei119BackendTests {
     @Test
     @DisplayName("3. 공공데이터포털 인증키가 이미 인코딩된 경우 이중 인코딩하지 않아야 한다")
     void testServiceKeyEncoding() {
-        String encoded = "s%2FvWNiKH1YndVRu2mPOq7OXAIj%2Byk0M3JTgvN%2B8UVdSFPq8SBR7zuUdG3mxklTrj6WYIiUidSIUwgE8bz09fzQ%3D%3D";
-        String decoded = "s/vWNiKH1YndVRu2mPOq7OXAIj+yk0M3JTgvN+8UVdSFPq8SBR7zuUdG3mxklTrj6WYIiUidSIUwgE8bz09fzQ==";
+        String encoded = "dummy%2Ftest%2BserviceKey1234567890abcdef%3D%3D";
+        String decoded = "dummy/test+serviceKey1234567890abcdef==";
 
         assertEquals(encoded, NmcOpenApiClient.ensureUrlEncodedServiceKey(encoded));
         assertEquals(encoded, NmcOpenApiClient.ensureUrlEncodedServiceKey(decoded));
@@ -400,5 +420,185 @@ class Yonsei119BackendTests {
         assertEquals(1, geoItems.size());
         assertEquals(37.2808750, geoItems.get(0).lat(), 0.0001);
         assertEquals(127.9009998, geoItems.get(0).lng(), 0.0001);
+    }
+
+    /**
+     * [테스트 8] {@code GET /api/config} 공개 설정 반환 및 시크릿 비노출 검증
+     */
+    @Test
+    @DisplayName("8. /api/config 엔드포인트는 공개 Client ID와 기본 출발 좌표를 반환하고 시크릿은 노출하지 않아야 한다")
+    void configEndpointExposesPublicClientIdOnly() {
+        var response = emergencyApiController.getConfig();
+        FrontendConfigDto body = response.getBody();
+        assertNotNull(body);
+        assertNotNull(body.naverClientId());
+        assertNotNull(body.naverDarkStyleId());
+        assertTrue(body.defaultLat() > 33.0 && body.defaultLat() < 39.0);
+        assertTrue(body.defaultLng() > 124.0 && body.defaultLng() < 132.0);
+        assertFalse(body.defaultLabel().isBlank());
+    }
+
+    /**
+     * [테스트 9] 길찾기 세부 혼잡 구간({@code buildDetailedSections}) 중복 추가 방지 검증
+     */
+    @Test
+    @DisplayName("9. guide 기반 세부 구간 생성 시 이미 분해된 영역 위에 원본 section이 중복 추가되지 않아야 한다")
+    void testDetailedSectionsDoNotDuplicateCongestionSegments() {
+        String detailedJson = """
+                {
+                  "code": 0,
+                  "message": "ok",
+                  "route": {
+                    "trafast": [
+                      {
+                        "summary": { "distance": 2000, "duration": 240000, "tollFare": 0, "taxiFare": 4800, "fuelPrice": 300 },
+                        "path": [
+                          [127.90, 37.31],
+                          [127.91, 37.31],
+                          [127.92, 37.31],
+                          [127.93, 37.31],
+                          [127.94, 37.31]
+                        ],
+                        "section": [
+                          { "pointIndex": 0, "pointCount": 4, "distance": 2000, "name": "서원대로", "congestion": 2, "speed": 22 }
+                        ],
+                        "guide": [
+                          { "pointIndex": 2, "distance": 1200, "duration": 90000, "type": 1, "instructions": "서원대로 직진" },
+                          { "pointIndex": 4, "distance": 800, "duration": 240000, "type": 88, "instructions": "목적지 도착" }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """;
+
+        DirectionsResponseDto dto = naverDirectionsService.parseDirectionsJson(
+                detailedJson, "directions5", "Directions 5", "trafast", "실시간 빠른길"
+        );
+        assertEquals(2, dto.sections().size(), "원본 section이 끝에 중복 추가되지 않고 세밀한 2개 구간만 유지되어야 합니다.");
+        assertEquals(1, dto.sections().get(0).congestion(), "48km/h 원활 구간은 서행(2)으로 덮어씌워지지 않고 원활(1)을 유지해야 합니다.");
+        assertEquals(3, dto.sections().get(1).congestion(), "12km/h 정체 구간은 정체(3)로 분류되어야 합니다.");
+    }
+
+    /**
+     * [테스트 10] {@code mergedBasic} 필드 보존 및 전체 장애 폴백 시 종별 등급 유지 검증
+     */
+    @Test
+    @DisplayName("10. list 전용 필드가 basic에 병합 보존되고, list·basic 동시 장애 폴백 시에도 권역/상급종합 분류가 유지되어야 한다")
+    void testMergedBasicAndTotalOutageClassificationFallback() {
+        try {
+            Map<String, List<Map<String, String>>> initialData = Map.of(
+                    "list", List.of(Map.of(
+                            "hpid", "A2200001",
+                            "dutyname", "연세대학교원주세브란스기독병원",
+                            "dutyaddr", "강원특별자치도 원주시 일산로 20",
+                            "wgs84lat", "37.31912",
+                            "wgs84lon", "127.94561",
+                            "phpid", "LEGACY_CODE_01"
+                    )),
+                    "basic", List.of(Map.of(
+                            "hpid", "A2200001",
+                            "dutyemclsname", "권역응급의료센터",
+                            "dutytel3", "033-741-1119"
+                    )),
+                    "beds", List.of(Map.of("hpid", "A2200001", "hvec", "5"))
+            );
+
+            EmergencySnapshotDto initialSnapshot = emergencyDataService.mergeDatasetsIntoSnapshot(initialData);
+            HospitalDto first = initialSnapshot.hospitals().get(0);
+            assertEquals("LEGACY_CODE_01", first.basic().get("phpid"), "list 전용 필드가 mergedBasic에 누락 없이 보존되어야 합니다.");
+            assertTrue(first.regional());
+            assertEquals("tertiary", first.type().group());
+
+            emergencyDataService.setCachedSnapshotForTest(initialSnapshot);
+
+            // list·basic이 모두 빈 응답이고 beds만 수신된 부분/전체 장애 상황 시뮬레이션
+            EmergencySnapshotDto fallbackSnapshot = emergencyDataService.mergeDatasetsIntoSnapshot(Map.of(
+                    "beds", List.of(Map.of("hpid", "A2200001", "hvec", "2"))
+            ));
+            assertEquals(1, fallbackSnapshot.totalCount());
+            HospitalDto recovered = fallbackSnapshot.hospitals().get(0);
+            assertTrue(recovered.regional(), "장애 폴백 시 권역응급의료센터 여부가 초기화되지 않아야 합니다.");
+            assertEquals("tertiary", recovered.type().group(), "장애 폴백 시 상급종합병원 등급이 유지되어야 합니다.");
+            assertEquals("2", recovered.beds().get("hvec"));
+        } finally {
+            emergencyDataService.setCachedSnapshotForTest(null);
+        }
+    }
+
+    /**
+     * [테스트 11] {@code BoundedTtlCache} LRU 용량 상한 검증
+     */
+    @Test
+    @DisplayName("11. 유한 크기 LRU 캐시는 최대 엔트리 상한을 초과하지 않고 가장 오래된 항목을 자동 퇴거해야 한다")
+    void testBoundedCacheEvictsLeastRecentlyUsedEntries() {
+        NaverDirectionsService.BoundedTtlCache<String, String> cache =
+                new NaverDirectionsService.BoundedTtlCache<>(2, 60L);
+        cache.put("k1", "v1");
+        cache.put("k2", "v2");
+        assertEquals("v1", cache.get("k1")); // k1을 최근 접근으로 갱신 → k2가 LRU 대상
+        cache.put("k3", "v3");
+
+        assertEquals(2, cache.size());
+        assertEquals("v1", cache.get("k1"));
+        assertEquals("v3", cache.get("k3"));
+        assertNull(cache.get("k2"), "가장 오래 참조되지 않은 k2가 퇴거되어야 합니다.");
+    }
+
+    /**
+     * [테스트 12] 실제 내장 Tomcat HTTP 서버의 루트({@code /}) 포워딩 및 정적 리소스(GZIP/ETag 포함) 응답 무결성 검증
+     */
+    @Test
+    @DisplayName("12. 실제 내장 웹 서버에서 GET / 및 정적 리소스가 빈 본문(0바이트) 없이 정상 반환되어야 한다")
+    void testRootAndStaticResourcesServeNonEmptyContent() throws Exception {
+        HttpClient client = HttpClient.newHttpClient();
+
+        for (String path : List.of("/", "/index.html", "/style.css", "/app.js", "/api/config")) {
+            HttpRequest plainReq = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .GET()
+                    .build();
+            HttpResponse<String> plainRes = client.send(plainReq, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            assertEquals(200, plainRes.statusCode(), path + " 요청이 HTTP 200을 반환해야 합니다.");
+            assertFalse(plainRes.body().isBlank(), path + " 응답 본문이 비어 있지 않아야 합니다.");
+
+            HttpRequest gzipReq = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .header("Accept-Encoding", "gzip, deflate, br")
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> gzipRes = client.send(gzipReq, HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, gzipRes.statusCode(), path + " (gzip) 요청이 HTTP 200을 반환해야 합니다.");
+            assertTrue(gzipRes.body().length > 0, path + " (gzip) 응답 바이트 길이가 0보다 커야 합니다.");
+
+            String decodedBody;
+            if ("gzip".equalsIgnoreCase(gzipRes.headers().firstValue("Content-Encoding").orElse(""))) {
+                try (GZIPInputStream gis = new GZIPInputStream(new ByteArrayInputStream(gzipRes.body()))) {
+                    decodedBody = new String(gis.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            } else {
+                decodedBody = new String(gzipRes.body(), StandardCharsets.UTF_8);
+            }
+
+            if ("/".equals(path) || "/index.html".equals(path)) {
+                assertTrue(decodedBody.contains("<!DOCTYPE html>"), path + " 응답에 HTML 문서가 포함되어야 합니다.");
+                assertTrue(decodedBody.contains("id=\"map\""), path + " 응답에 #map 요소가 포함되어야 합니다.");
+            }
+        }
+
+        // 정적 리소스 Weak ETag 조건부 재검증(304 Not Modified) 동작 확인
+        HttpResponse<String> appJsRes = client.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/app.js")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        String etag = appJsRes.headers().firstValue("ETag").orElse("");
+        assertFalse(etag.isBlank(), "/app.js 응답에 ETag 헤더가 포함되어야 합니다.");
+
+        HttpResponse<String> notModifiedRes = client.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/app.js"))
+                        .header("If-None-Match", etag)
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(304, notModifiedRes.statusCode(), "동일 ETag 재요청 시 304 Not Modified가 반환되어야 합니다.");
     }
 }

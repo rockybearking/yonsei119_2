@@ -53,11 +53,20 @@
     <meta name="color-scheme" content="light dark">
     <script>
         (function () {
+            let initialTheme = 'dark';
+            try {
+                const savedTheme = localStorage.getItem('yonsei119-theme');
+                if (savedTheme === 'light' || savedTheme === 'dark') {
+                    initialTheme = savedTheme;
+                }
+            } catch {
+                // 시크릿 모드 등 스토리지 접근 제한 환경에서는 기본 다크 테마 사용
+            }
             const meta = document.querySelector('meta[name="color-scheme"]');
             if (meta) {
-                meta.content = 'dark';
+                meta.content = initialTheme;
             }
-            document.documentElement.dataset.theme = 'dark';
+            document.documentElement.dataset.theme = initialTheme;
         })();
     </script>
 
@@ -155,6 +164,28 @@
         </div>
     </div>
 </aside>
+
+<!-- ==========================================================================
+     [2-1. 비침투형 상태·오류 알림 토스트 (#status-toast / #status) 및 스크린 리더 라이브 영역]
+     - [역할] GPS 권한 안내, 우클릭 출발지 변경, 주소 검색 결과, 네트워크 오류 등을 Top Layer에 표시합니다.
+     - [연결 경로] `frontend/app.js`의 `setStatus(message)`가 `popover="manual"` API로 제어하며,
+       외부 지도 클릭 시 실수로 닫히지 않고 자동 타이머 또는 닫기(`×`) 버튼으로 해제됩니다.
+     ========================================================================== -->
+<div id="status-toast" class="status-toast" popover="manual" data-open="false">
+    <span id="status" class="status-toast-text"></span>
+    <button
+            id="status-toast-close"
+            class="status-toast-close"
+            type="button"
+            popovertarget="status-toast"
+            popovertargetaction="hide"
+            aria-label="상태 알림 닫기"
+    >
+        ×
+    </button>
+</div>
+<div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="alert-announcer" class="sr-only" role="alert" aria-atomic="true"></div>
 
 <!-- ==========================================================================
      [2-2. 모바일 전용 좌측 상단 ☰(세줄 메뉴) 및 독립 도구 서랍 (#mobile-top-left-menu)]
@@ -363,7 +394,7 @@
     <!-- 검색 입력창, 종별 필터, 출발지 주소 및 실도로 ETA 순위 영역 -->
     <div id="search-content">
         <!-- 시맨틱 <search> 랜드마크 (`app.js`: `#keyword` input/keydown + `#search-form` submit → `GET /api/geocode`) -->
-        <search class="search-row" role="search">
+        <search class="search-row">
             <form id="search-form" autocomplete="off">
                 <label class="sr-only" for="keyword">병원 이름 또는 지역 검색</label>
 
@@ -617,7 +648,7 @@
         <details id="developer-mode" class="developer-mode detail-section-deferred">
             <summary>
                 개발자모드
-                <small>펼치면 전체 정보를 다시 조회합니다</small>
+                <small>펼치면 API 원본 필드를 대조·표시합니다</small>
             </summary>
 
             <div class="developer-content">

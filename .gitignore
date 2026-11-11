@@ -31,3 +31,5 @@ Thumbs.db
 *.bak
 .env
 .env.local
+backend/.env
+**/application-local.yml

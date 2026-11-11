@@ -6,6 +6,7 @@ import com.yonsei119.dto.GeocodeResponseDto;
 import com.yonsei119.dto.HospitalDto;
 import com.yonsei119.dto.HospitalEtaRankDto;
 import com.yonsei119.dto.ReverseGeocodeResponseDto;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,17 +20,19 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /**
@@ -71,6 +74,15 @@ public class NaverDirectionsService {
     /** 지오코딩/역지오코딩 캐시 유지 시간(초, 기본 600초 = 10분 — 도로명 주소는 자주 변하지 않으므로 길게 유지) */
     private static final long GEOCODE_CACHE_TTL_SECONDS = 600L;
 
+    /** 저사양 컨테이너(Render 512MB RAM) 힙 메모리 보호를 위한 LRU 캐시 엔트리 상한 */
+    private static final int MAX_ROUTE_CACHE_ENTRIES = 256;
+    private static final int MAX_ETA_CACHE_ENTRIES = 512;
+    private static final int MAX_REVERSE_GEOCODE_CACHE_ENTRIES = 512;
+    private static final int MAX_GEOCODE_CACHE_ENTRIES = 512;
+
+    /** OpenStreetMap Nominatim 보조 지오코딩 호출 최소 간격(1초당 최대 1회 정책 준수) */
+    private static final long NOMINATIM_MIN_INTERVAL_MS = 1_050L;
+
     /** 네이버 클라우드 Reverse Geocoding(좌표 -> 주소) 공식 엔드포인트 */
     private static final String REVERSE_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-reversegeocode/v2/gc";
     /** 네이버 클라우드 Geocoding(주소 -> 좌표) 공식 엔드포인트 */
@@ -96,8 +108,18 @@ public class NaverDirectionsService {
     private final Yonsei119Properties properties;
     private final HttpClient httpClient;
     private final JsonMapper jsonMapper;
-    private final ConcurrentHashMap<String, CachedRoute> routeCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, CachedReverseGeocode> reverseGeocodeCache = new ConcurrentHashMap<>();
+    private final ExecutorService httpBatchExecutor;
+    private final ExecutorService etaRankExecutor;
+    private final BoundedTtlCache<String, DirectionsResponseDto> routeCache =
+            new BoundedTtlCache<>(MAX_ROUTE_CACHE_ENTRIES, ROUTE_CACHE_TTL_SECONDS);
+    private final BoundedTtlCache<String, EtaSummary> etaCache =
+            new BoundedTtlCache<>(MAX_ETA_CACHE_ENTRIES, ROUTE_CACHE_TTL_SECONDS);
+    private final BoundedTtlCache<String, ReverseGeocodeResponseDto> reverseGeocodeCache =
+            new BoundedTtlCache<>(MAX_REVERSE_GEOCODE_CACHE_ENTRIES, GEOCODE_CACHE_TTL_SECONDS);
+    private final BoundedTtlCache<String, GeocodeResponseDto> geocodeCache =
+            new BoundedTtlCache<>(MAX_GEOCODE_CACHE_ENTRIES, GEOCODE_CACHE_TTL_SECONDS);
+    private final Object nominatimLock = new Object();
+    private long lastNominatimRequestAtMs = 0L;
 
     public NaverDirectionsService(Yonsei119Properties properties) {
         this.properties = properties;
@@ -105,6 +127,31 @@ public class NaverDirectionsService {
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
         this.jsonMapper = JsonMapper.builder().build();
+        AtomicInteger batchThreadSeq = new AtomicInteger(1);
+        this.httpBatchExecutor = Executors.newFixedThreadPool(6, runnable -> {
+            Thread thread = new Thread(runnable, "yonsei119-naver-batch-" + batchThreadSeq.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        });
+        AtomicInteger etaThreadSeq = new AtomicInteger(1);
+        this.etaRankExecutor = Executors.newFixedThreadPool(8, runnable -> {
+            Thread thread = new Thread(runnable, "yonsei119-naver-eta-" + etaThreadSeq.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    /** 애플리케이션 종료 시 경로 탐색 및 ETA 랭킹 전용 I/O 스레드 풀을 정리합니다. */
+    @PreDestroy
+    public void shutdown() {
+        httpBatchExecutor.shutdownNow();
+        etaRankExecutor.shutdownNow();
+    }
+
+    private boolean hasNaverApiCredentials() {
+        return properties.naver() != null
+                && properties.naver().clientId() != null && !properties.naver().clientId().isBlank()
+                && properties.naver().clientSecret() != null && !properties.naver().clientSecret().isBlank();
     }
 
     /**
@@ -140,9 +187,9 @@ public class NaverDirectionsService {
                 normalizedApi, normalizedOption, startLat, startLng, goalLat, goalLng, safeWaypoints
         );
 
-        CachedRoute cached = routeCache.get(cacheKey);
-        if (cached != null && Instant.now().isBefore(cached.createdAt().plusSeconds(ROUTE_CACHE_TTL_SECONDS))) {
-            return cached.response();
+        DirectionsResponseDto cached = routeCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
         }
 
         String baseEndpoint = "directions15".equals(normalizedApi)
@@ -150,6 +197,14 @@ public class NaverDirectionsService {
                 : properties.naver().directions5Url();
         String apiLabel = "directions15".equals(normalizedApi) ? "Directions 15" : "Directions 5";
         String optionLabel = OPTION_LABELS.getOrDefault(normalizedOption, "실시간 빠른길");
+
+        if (!hasNaverApiCredentials()) {
+            return createErrorResponse(
+                    normalizedApi, apiLabel, normalizedOption, optionLabel,
+                    -1,
+                    "네이버 지도 API 인증키(NAVER_MAP_CLIENT_SECRET)가 설정되지 않았습니다."
+            );
+        }
 
         // 네이버 Directions API는 1회 요청당 최대 3개 옵션까지 콜론(:) 구분자로 동시 조회를 지원하므로,
         // 4대 핵심 옵션(실시간 빠른길·실시간 최적·실시간 편한길·무료 우선) 전체를 한 번에 비교할 수 있도록
@@ -167,10 +222,12 @@ public class NaverDirectionsService {
 
         try {
             CompletableFuture<HttpResponse<String>> future1 = CompletableFuture.supplyAsync(
-                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch1Options, safeWaypoints)
+                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch1Options, safeWaypoints),
+                    httpBatchExecutor
             );
             CompletableFuture<HttpResponse<String>> future2 = CompletableFuture.supplyAsync(
-                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch2Options, safeWaypoints)
+                    () -> sendDirectionsHttpRequest(baseEndpoint, startParam, goalParam, batch2Options, safeWaypoints),
+                    httpBatchExecutor
             );
 
             HttpResponse<String> response1 = future1.join();
@@ -202,9 +259,8 @@ public class NaverDirectionsService {
                     response1 != null && response1.statusCode() >= 200 && response1.statusCode() < 300 ? response1.body() : null,
                     response2 != null && response2.statusCode() >= 200 && response2.statusCode() < 300 ? response2.body() : null
             );
-            Instant now = Instant.now();
 
-            // 병합된 응답에서 4대 옵션 전체를 각각 파싱하여 캐시에 선제 저장
+            // 병합된 응답에서 4대 옵션 전체를 각각 파싱하여 유한 크기 LRU 캐시에 선제 저장
             for (String optKey : allRequestedOptions) {
                 String label = OPTION_LABELS.getOrDefault(optKey, "실시간 빠른길");
                 DirectionsResponseDto optDto = parseDirectionsJson(
@@ -214,13 +270,25 @@ public class NaverDirectionsService {
                     String optCacheKey = buildRouteCacheKey(
                             normalizedApi, optKey, startLat, startLng, goalLat, goalLng, safeWaypoints
                     );
-                    routeCache.put(optCacheKey, new CachedRoute(optDto, now));
+                    routeCache.put(optCacheKey, optDto);
+                    if (safeWaypoints.isEmpty() && "directions5".equals(normalizedApi)) {
+                        etaCache.put(
+                                buildEtaCacheKey(optKey, startLat, startLng, goalLat, goalLng),
+                                new EtaSummary(
+                                        optDto.distanceKm(),
+                                        optDto.durationMinutes(),
+                                        optDto.durationText(),
+                                        optDto.tollFare(),
+                                        optDto.taxiFare()
+                                )
+                        );
+                    }
                 }
             }
 
-            CachedRoute primaryCached = routeCache.get(cacheKey);
+            DirectionsResponseDto primaryCached = routeCache.get(cacheKey);
             if (primaryCached != null) {
-                return primaryCached.response();
+                return primaryCached;
             }
 
             return parseDirectionsJson(
@@ -472,13 +540,15 @@ public class NaverDirectionsService {
             double startLng,
             double radiusKm,
             int limit,
-            boolean includeOther
+            boolean includeOther,
+            String option
     ) {
         if (allHospitals == null || allHospitals.isEmpty()) {
             return List.of();
         }
 
         int safeLimit = Math.max(1, Math.min(limit, 8));
+        String normalizedOption = normalizeOption(option);
 
         // 1차 필터링: 반경 내 + 종별 필터 + 직선거리 기준 상위 후보 선별
         List<HospitalDto> candidates = allHospitals.stream()
@@ -503,12 +573,13 @@ public class NaverDirectionsService {
                     .toList();
         }
 
+        // 전용 I/O 스레드 풀(etaRankExecutor) + 단일 옵션 요약 경량 조회(getDrivingEtaSummary)를 사용하여
+        // API 호출 비용을 50% 절감하고 단일 코어 컨테이너에서의 ForkJoinPool.commonPool 기아 현상을 방지합니다.
         List<CompletableFuture<HospitalEtaRankDto>> futures = candidates.stream()
                 .map(hospital -> CompletableFuture.supplyAsync(() -> {
                     double straightKm = Math.round(haversineKm(startLat, startLng, hospital.lat(), hospital.lng()) * 10.0) / 10.0;
-                    DirectionsResponseDto route = getDrivingRoute(
-                            startLat, startLng, hospital.lat(), hospital.lng(),
-                            "directions5", "trafast", ""
+                    EtaSummary eta = getDrivingEtaSummary(
+                            startLat, startLng, hospital.lat(), hospital.lng(), normalizedOption
                     );
 
                     String erBeds = hospital.beds() != null
@@ -521,7 +592,7 @@ public class NaverDirectionsService {
                             ? "권역응급의료센터"
                             : (hospital.type() != null ? hospital.type().label() : "응급의료기관");
 
-                    if (route.code() == 0 && route.durationMinutes() > 0) {
+                    if (eta != null && eta.durationMinutes() > 0) {
                         return new HospitalEtaRankDto(
                                 0,
                                 hospital.id(),
@@ -531,11 +602,11 @@ public class NaverDirectionsService {
                                 hospital.regional(),
                                 erBeds,
                                 straightKm,
-                                route.distanceKm(),
-                                route.durationMinutes(),
-                                route.durationText(),
-                                route.tollFare(),
-                                route.taxiFare(),
+                                eta.distanceKm(),
+                                eta.durationMinutes(),
+                                eta.durationText(),
+                                eta.tollFare(),
+                                eta.taxiFare(),
                                 hospital.lat(),
                                 hospital.lng()
                         );
@@ -559,7 +630,7 @@ public class NaverDirectionsService {
                             hospital.lat(),
                             hospital.lng()
                     );
-                }))
+                }, etaRankExecutor))
                 .toList();
 
         List<HospitalEtaRankDto> sorted = futures.stream()
@@ -603,11 +674,107 @@ public class NaverDirectionsService {
      * - 좌표를 소수점 넷째 자리({@code %.4f,%.4f} ≈ 약 11m 격자)로 반올림한 캐시 키({@code reverseGeocodeCache})를 사용하여
      *   비슷한 지점을 다시 찍었을 때 외부 API 호출 없이 즉시 응답합니다.
      */
+    private static String buildEtaCacheKey(
+            String option,
+            double startLat,
+            double startLng,
+            double goalLat,
+            double goalLng
+    ) {
+        return String.format(
+                Locale.US,
+                "eta|%s|%.5f,%.5f|%.5f,%.5f",
+                option, startLat, startLng, goalLat, goalLng
+        );
+    }
+
+    /**
+     * 실도로 ETA 순위 계산 전용 경량 조회 메서드:
+     * 기존 {@code routeCache} 또는 {@code etaCache} 히트 시 즉시 재사용하고,
+     * 미스 시에도 2배치 다중 옵션 대신 요청된 단일 옵션 1회만 호출하여 {@code summary}만 파싱합니다.
+     */
+    private EtaSummary getDrivingEtaSummary(
+            double startLat,
+            double startLng,
+            double goalLat,
+            double goalLng,
+            String normalizedOption
+    ) {
+        String fullRouteKey = buildRouteCacheKey(
+                "directions5", normalizedOption, startLat, startLng, goalLat, goalLng, ""
+        );
+        DirectionsResponseDto cachedRoute = routeCache.get(fullRouteKey);
+        if (cachedRoute != null && cachedRoute.code() == 0 && cachedRoute.durationMinutes() > 0) {
+            return new EtaSummary(
+                    cachedRoute.distanceKm(),
+                    cachedRoute.durationMinutes(),
+                    cachedRoute.durationText(),
+                    cachedRoute.tollFare(),
+                    cachedRoute.taxiFare()
+            );
+        }
+
+        String etaKey = buildEtaCacheKey(normalizedOption, startLat, startLng, goalLat, goalLng);
+        EtaSummary cachedEta = etaCache.get(etaKey);
+        if (cachedEta != null) {
+            return cachedEta;
+        }
+
+        if (!hasNaverApiCredentials()) {
+            return null;
+        }
+
+        String startParam = String.format(Locale.US, "%.6f,%.6f", startLng, startLat);
+        String goalParam = String.format(Locale.US, "%.6f,%.6f", goalLng, goalLat);
+        HttpResponse<String> response = sendDirectionsHttpRequest(
+                properties.naver().directions5Url(), startParam, goalParam, normalizedOption, ""
+        );
+        if (response == null || response.statusCode() < 200 || response.statusCode() >= 300) {
+            return null;
+        }
+
+        try {
+            JsonNode root = jsonMapper.readTree(response.body());
+            if (root.path("code").asInt(-1) != 0) {
+                return null;
+            }
+            JsonNode optionArray = root.path("route").path(normalizedOption);
+            if (!optionArray.isArray() || optionArray.isEmpty()) {
+                return null;
+            }
+            JsonNode summary = optionArray.get(0).path("summary");
+            int distanceMeters = summary.path("distance").asInt(0);
+            double distanceKm = Math.round(distanceMeters / 100.0) / 10.0;
+            long durationMs = summary.path("duration").asLong(0L);
+            if (durationMs <= 0L) {
+                return null;
+            }
+            int durationMinutes = Math.max(1, (int) Math.round(durationMs / 60000.0));
+            EtaSummary parsed = new EtaSummary(
+                    distanceKm,
+                    durationMinutes,
+                    formatDurationKorean(durationMs),
+                    summary.path("tollFare").asInt(0),
+                    summary.path("taxiFare").asInt(0)
+            );
+            etaCache.put(etaKey, parsed);
+            return parsed;
+        } catch (Exception ex) {
+            log.debug("ETA 요약 JSON 파싱 생략: {}", ex.getMessage());
+            return null;
+        }
+    }
+
     public ReverseGeocodeResponseDto reverseGeocode(double lat, double lng) {
         String cacheKey = String.format(Locale.US, "%.4f,%.4f", lat, lng);
-        CachedReverseGeocode cached = reverseGeocodeCache.get(cacheKey);
-        if (cached != null && Instant.now().isBefore(cached.createdAt().plusSeconds(GEOCODE_CACHE_TTL_SECONDS))) {
-            return cached.response();
+        ReverseGeocodeResponseDto cached = reverseGeocodeCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
+        if (!hasNaverApiCredentials()) {
+            String fallbackCoord = String.format(Locale.US, "위도 %.4f, 경도 %.4f", lat, lng);
+            return new ReverseGeocodeResponseDto(-1, "API 인증키 미설정", lat, lng, fallbackCoord, fallbackCoord, "", "");
         }
 
         String coordsParam = String.format(Locale.US, "%.6f,%.6f", lng, lat);
@@ -633,7 +800,7 @@ public class NaverDirectionsService {
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 ReverseGeocodeResponseDto parsed = parseReverseGeocodeJson(response.body(), lat, lng);
                 if (parsed.code() == 0) {
-                    reverseGeocodeCache.put(cacheKey, new CachedReverseGeocode(parsed, Instant.now()));
+                    reverseGeocodeCache.put(cacheKey, parsed);
                 }
                 return parsed;
             }
@@ -734,30 +901,38 @@ public class NaverDirectionsService {
             return new GeocodeResponseDto(-1, "", List.of());
         }
 
+        String cacheKey = safeQuery.replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        GeocodeResponseDto cached = geocodeCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
         List<GeocodeResponseDto.GeocodeItemDto> results = new ArrayList<>();
 
         // 1. 네이버 클라우드 플랫폼 Geocoding API 호출
-        try {
-            String url = GEOCODE_URL + "?query=" + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(8))
-                    .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
-                    .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
+        if (hasNaverApiCredentials()) {
+            try {
+                String url = GEOCODE_URL + "?query=" + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .timeout(Duration.ofSeconds(8))
+                        .header("X-NCP-APIGW-API-KEY-ID", properties.naver().clientId())
+                        .header("X-NCP-APIGW-API-KEY", properties.naver().clientSecret())
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
 
-            HttpResponse<String> response = httpClient.send(
-                    request,
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-            );
+                HttpResponse<String> response = httpClient.send(
+                        request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                );
 
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                results.addAll(parseGeocodeJson(response.body()));
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    results.addAll(parseGeocodeJson(response.body()));
+                }
+            } catch (Exception ex) {
+                log.warn("네이버 Geocoding 호출 오류: {}", ex.getMessage());
             }
-        } catch (Exception ex) {
-            log.warn("네이버 Geocoding 호출 오류: {}", ex.getMessage());
         }
 
         // 2. 병원 데이터 내 주소/이름 매칭 보완
@@ -782,23 +957,11 @@ public class NaverDirectionsService {
             }
         }
 
-        // 3. 랜드마크/장소명(예: "원주시청", "강릉역") 검색 시 결과가 없으면 Nominatim 보조 조회
+        // 3. 랜드마크/장소명(예: "원주시청", "강릉역") 검색 시 결과가 없으면 Nominatim 보조 조회 (초당 1회 정책 준수)
         if (results.isEmpty()) {
             try {
-                String nomUrl = "https://nominatim.openstreetmap.org/search?format=json&limit=4&countrycodes=kr&accept-language=ko&q="
-                        + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
-                HttpRequest nomReq = HttpRequest.newBuilder()
-                        .uri(URI.create(nomUrl))
-                        .timeout(Duration.ofSeconds(6))
-                        .header("User-Agent", "Yonsei119-Emergency-Service/1.0")
-                        .header("Accept", "application/json")
-                        .GET()
-                        .build();
-                HttpResponse<String> nomRes = httpClient.send(
-                        nomReq,
-                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-                );
-                if (nomRes.statusCode() == 200) {
+                HttpResponse<String> nomRes = sendRateLimitedNominatimRequest(safeQuery);
+                if (nomRes != null && nomRes.statusCode() == 200) {
                     JsonNode arr = jsonMapper.readTree(nomRes.body());
                     if (arr.isArray()) {
                         for (JsonNode item : arr) {
@@ -823,7 +986,40 @@ public class NaverDirectionsService {
             }
         }
 
-        return new GeocodeResponseDto(results.isEmpty() ? 404 : 0, safeQuery, List.copyOf(results));
+        GeocodeResponseDto responseDto = new GeocodeResponseDto(
+                results.isEmpty() ? 404 : 0,
+                safeQuery,
+                List.copyOf(results)
+        );
+        if (!results.isEmpty()) {
+            geocodeCache.put(cacheKey, responseDto);
+        }
+        return responseDto;
+    }
+
+    private HttpResponse<String> sendRateLimitedNominatimRequest(String safeQuery) throws Exception {
+        synchronized (nominatimLock) {
+            long now = System.currentTimeMillis();
+            long waitMs = (lastNominatimRequestAtMs + NOMINATIM_MIN_INTERVAL_MS) - now;
+            if (waitMs > 0L) {
+                Thread.sleep(waitMs);
+            }
+            lastNominatimRequestAtMs = System.currentTimeMillis();
+
+            String nomUrl = "https://nominatim.openstreetmap.org/search?format=json&limit=4&countrycodes=kr&accept-language=ko&q="
+                    + URLEncoder.encode(safeQuery, StandardCharsets.UTF_8);
+            HttpRequest nomReq = HttpRequest.newBuilder()
+                    .uri(URI.create(nomUrl))
+                    .timeout(Duration.ofSeconds(6))
+                    .header("User-Agent", "Yonsei119-Emergency-Service/1.0")
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            return httpClient.send(
+                    nomReq,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+        }
     }
 
     public List<GeocodeResponseDto.GeocodeItemDto> parseGeocodeJson(String jsonBody) {
@@ -982,13 +1178,31 @@ public class NaverDirectionsService {
             return rawSections;
         }
 
+        // guide 타이밍 정보가 일부 비어 있어 detailed 구간이 덮지 못한 공백 영역에 한해서만 원본 혼잡 구간을 보조 추가합니다.
+        // (이미 세밀하게 분해된 구간 위에 원본 구간을 중복 추가하면 원활 초록 구간이 서행/정체 색상으로 덮어씌워지므로 방지)
         for (DirectionsResponseDto.RouteSectionDto raw : rawSections) {
-            if (raw.congestion() >= 2) {
+            if (raw.congestion() >= 2 && !hasOverlappingDetailedSection(detailed, raw)) {
                 detailed.add(raw);
             }
         }
 
         return detailed;
+    }
+
+    private static boolean hasOverlappingDetailedSection(
+            List<DirectionsResponseDto.RouteSectionDto> detailed,
+            DirectionsResponseDto.RouteSectionDto candidate
+    ) {
+        int candStart = candidate.pointIndex();
+        int candEnd = candStart + candidate.pointCount();
+        for (DirectionsResponseDto.RouteSectionDto det : detailed) {
+            int detStart = det.pointIndex();
+            int detEnd = detStart + det.pointCount();
+            if (Math.max(candStart, detStart) < Math.min(candEnd, detEnd)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static DirectionsResponseDto.RouteSectionDto findOverlappingSection(
@@ -1121,15 +1335,78 @@ public class NaverDirectionsService {
         );
     }
 
-    private record CachedRoute(
-            DirectionsResponseDto response,
-            Instant createdAt
+    private record EtaSummary(
+            double distanceKm,
+            int durationMinutes,
+            String durationText,
+            int tollFare,
+            int taxiFare
     ) {
     }
 
-    private record CachedReverseGeocode(
-            ReverseGeocodeResponseDto response,
-            Instant createdAt
-    ) {
+    /**
+     * 최대 엔트리 개수(LRU)와 만료 시간(TTL)을 동시에 강제하는 스레드 안전 인메모리 캐시입니다.
+     * 폴리라인 좌표 배열이 큰 경로 응답이 무한 적재되어 힙 메모리(OOM)를 고갈시키는 현상을 방지합니다.
+     */
+    public static final class BoundedTtlCache<K, V> {
+        private final int maxEntries;
+        private final long ttlMillis;
+        private final ReentrantLock lock = new ReentrantLock();
+        private final LinkedHashMap<K, CacheEntry<V>> map;
+
+        public BoundedTtlCache(int maxEntries, long ttlSeconds) {
+            this.maxEntries = Math.max(1, maxEntries);
+            this.ttlMillis = Math.max(1L, ttlSeconds) * 1000L;
+            this.map = new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+                    return size() > BoundedTtlCache.this.maxEntries;
+                }
+            };
+        }
+
+        public V get(K key) {
+            long now = System.currentTimeMillis();
+            lock.lock();
+            try {
+                CacheEntry<V> entry = map.get(key);
+                if (entry == null) {
+                    return null;
+                }
+                if (now >= entry.expiresAtMs()) {
+                    map.remove(key);
+                    return null;
+                }
+                return entry.value();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public void put(K key, V value) {
+            long now = System.currentTimeMillis();
+            long expiresAt = now + ttlMillis;
+            lock.lock();
+            try {
+                if (map.size() >= maxEntries) {
+                    map.entrySet().removeIf(entry -> now >= entry.getValue().expiresAtMs());
+                }
+                map.put(key, new CacheEntry<>(value, expiresAt));
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public int size() {
+            lock.lock();
+            try {
+                return map.size();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private record CacheEntry<V>(V value, long expiresAtMs) {
+        }
     }
 }

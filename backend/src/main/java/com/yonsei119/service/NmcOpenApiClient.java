@@ -1,6 +1,7 @@
 package com.yonsei119.service;
 
 import com.yonsei119.config.Yonsei119Properties;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -126,7 +127,11 @@ public class NmcOpenApiClient {
     public NmcOpenApiClient(Yonsei119Properties properties) {
         this.properties = properties;
         long timeoutMs = Math.max(5000L, properties.nemc().requestTimeoutMs());
-        this.fetchExecutor = Executors.newFixedThreadPool(MAX_CONCURRENT_REQUESTS);
+        this.fetchExecutor = Executors.newFixedThreadPool(MAX_CONCURRENT_REQUESTS, runnable -> {
+            Thread thread = new Thread(runnable, "yonsei119-nemc-fetch");
+            thread.setDaemon(true);
+            return thread;
+        });
         // 주의: HttpClient 내부 소켓 스레드와 호출용 fetchExecutor 스레드를 분리하고 HTTP/1.1 Keep-Alive를 사용하여
         // TLS 핸드셰이크 비용을 절약하고 스레드 고갈(Deadlock)을 방지합니다.
         this.httpClient = HttpClient.newBuilder()
@@ -134,6 +139,12 @@ public class NmcOpenApiClient {
                 .connectTimeout(Duration.ofMillis(timeoutMs))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+    }
+
+    /** 애플리케이션 종료 시 OpenAPI 수집용 스레드 풀을 안전하게 정리합니다. */
+    @PreDestroy
+    public void shutdown() {
+        fetchExecutor.shutdownNow();
     }
 
     /**
@@ -228,8 +239,12 @@ public class NmcOpenApiClient {
      *   예시(변경 후): {@code "%s/%s?serviceKey=%s&STAGE1=%s&pageNo=%d&numOfRows=%d"} (단, 현재는 전국 조회를 지원하므로 전체 조회가 기본입니다)
      */
     public ParsedXmlPage fetchSinglePage(String operation, int pageNo, int numOfRows) {
-        String baseUrl = properties.nemc().baseUrl().replaceAll("/+$", "");
         String encodedKey = ensureUrlEncodedServiceKey(properties.nemc().serviceKey());
+        if (encodedKey.isEmpty()) {
+            log.warn("NEMC_API_SERVICE_KEY가 설정되지 않아 OpenAPI 호출을 건너뜁니다 (operation={}). 환경변수 또는 .env 설정을 확인하세요.", operation);
+            return new ParsedXmlPage(0, List.of(), false);
+        }
+        String baseUrl = properties.nemc().baseUrl().replaceAll("/+$", "");
         String requestUrl = String.format(
                 "%s/%s?serviceKey=%s&pageNo=%d&numOfRows=%d",
                 baseUrl, operation, encodedKey, pageNo, numOfRows
